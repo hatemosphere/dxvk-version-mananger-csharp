@@ -1,0 +1,337 @@
+<UserControl x:Class="DxvkVersionManager.Views.DxvkSelectionDialog"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" 
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008" 
+             xmlns:local="clr-namespace:DxvkVersionManager.Views"
+             xmlns:converters="clr-namespace:DxvkVersionManager.Converters"
+             mc:Ignorable="d" 
+             d:DesignHeight="450" d:DesignWidth="600">
+    <UserControl.Resources>
+        <converters:BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter"/>
+        <converters:BooleanToVisibilityInverseConverter x:Key="BooleanToVisibilityInverseConverter"/>
+    </UserControl.Resources>
+    <Grid Background="#80000000">
+        <Border Background="White" 
+                MaxWidth="600" 
+                MaxHeight="700"
+                MinWidth="500"
+                MinHeight="300"
+                CornerRadius="8"
+                BorderBrush="{StaticResource BorderBrush}"
+                BorderThickness="1"
+                Margin="20">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+                
+                <!-- Header -->
+                <Grid Grid.Row="0" Background="{StaticResource PrimaryBrush}">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    
+                    <TextBlock Text="{Binding DialogTitle}" 
+                               Margin="15,10"
+                               Foreground="White"
+                               FontWeight="SemiBold"
+                               FontSize="16"/>
+                    
+                    <Button Grid.Column="1" 
+                            Content="✕" 
+                            Background="Transparent"
+                            BorderThickness="0"
+                            Foreground="White"
+                            FontWeight="Bold"
+                            Margin="10,5"
+                            Command="{Binding CloseDialogCommand}"
+                            Click="CloseButton_Click"/>
+                </Grid>
+                
+                <!-- Content -->
+                <Grid Grid.Row="1" Margin="20">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+                    
+                    <!-- Game Info -->
+                    <Grid Grid.Row="0" Margin="0,0,0,20">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        
+                        <!-- Game Cover -->
+                        <Border Grid.Column="0" 
+                                Width="120" 
+                                Height="56" 
+                                Margin="0,0,15,0"
+                                Background="{StaticResource BackgroundDarkBrush}" 
+                                CornerRadius="4">
+                            <Image Source="{Binding Game.Metadata.CoverUrl}" 
+                                   Stretch="UniformToFill"/>
+                        </Border>
+                        
+                        <!-- Game Details -->
+                        <StackPanel Grid.Column="1">
+                            <TextBlock Text="{Binding Game.Name}" 
+                                       FontWeight="SemiBold" 
+                                       FontSize="16"/>
+                            
+                            <Grid Margin="0,10,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                </Grid.RowDefinitions>
+                                
+                                <TextBlock Grid.Row="0" Grid.Column="0" 
+                                           Text="Direct3D: " 
+                                           Foreground="{StaticResource TextSecondaryBrush}" 
+                                           Margin="0,0,10,5"/>
+                                <TextBlock Grid.Row="0" Grid.Column="1" 
+                                           Text="{Binding Game.Metadata.Direct3dVersions}" 
+                                           Foreground="{StaticResource TextPrimaryBrush}"/>
+                                
+                                <TextBlock Grid.Row="1" Grid.Column="0" 
+                                           Text="Architecture: " 
+                                           Foreground="{StaticResource TextSecondaryBrush}" 
+                                           Margin="0,0,10,0"/>
+                                <TextBlock Grid.Row="1" Grid.Column="1" 
+                                           Foreground="{StaticResource TextPrimaryBrush}">
+                                    <Run Text="{Binding Game.Metadata.Executable64bit, Converter={StaticResource BooleanToStringConverter}, ConverterParameter='64-bit'}"/>
+                                    <Run Text="{Binding Game.Metadata.Executable32bit, Converter={StaticResource BooleanToStringConverter}, ConverterParameter='32-bit'}"/>
+                                </TextBlock>
+                            </Grid>
+                        </StackPanel>
+                    </Grid>
+                    
+                    <!-- Version Selection -->
+                    <Grid Grid.Row="1">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+                        
+                        <!-- Instructions -->
+                        <TextBlock Grid.Row="0" 
+                                   Text="Select a DXVK version to apply to this game:" 
+                                   Margin="0,0,0,10"/>
+                        
+                        <!-- Version Lists -->
+                        <TabControl Grid.Row="1">
+                            <!-- DXVK Tab -->
+                            <TabItem Header="DXVK">
+                                <ListBox ItemsSource="{Binding DxvkVersions}" 
+                                         SelectedItem="{Binding SelectedDxvkVersion}"
+                                         Margin="5"
+                                         DisplayMemberPath="."
+                                         BorderThickness="0">
+                                    <ListBox.ItemContainerStyle>
+                                        <Style TargetType="ListBoxItem">
+                                            <Setter Property="Padding" Value="10,8"/>
+                                            <Setter Property="Margin" Value="0,2"/>
+                                            <Setter Property="Background" Value="White"/>
+                                            <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}"/>
+                                            <Setter Property="BorderThickness" Value="1"/>
+                                            <Setter Property="SnapsToDevicePixels" Value="True"/>
+                                            <Setter Property="Template">
+                                                <Setter.Value>
+                                                    <ControlTemplate TargetType="ListBoxItem">
+                                                        <Border Background="{TemplateBinding Background}"
+                                                                BorderBrush="{TemplateBinding BorderBrush}"
+                                                                BorderThickness="{TemplateBinding BorderThickness}"
+                                                                CornerRadius="4">
+                                                            <ContentPresenter Margin="{TemplateBinding Padding}"/>
+                                                        </Border>
+                                                        <ControlTemplate.Triggers>
+                                                            <Trigger Property="IsSelected" Value="True">
+                                                                <Setter Property="Background" Value="{StaticResource PrimaryLightBrush}"/>
+                                                                <Setter Property="BorderBrush" Value="{StaticResource PrimaryBrush}"/>
+                                                                <Setter Property="Foreground" Value="White"/>
+                                                            </Trigger>
+                                                            <Trigger Property="IsMouseOver" Value="True">
+                                                                <Setter Property="BorderBrush" Value="{StaticResource PrimaryBrush}"/>
+                                                            </Trigger>
+                                                        </ControlTemplate.Triggers>
+                                                    </ControlTemplate>
+                                                </Setter.Value>
+                                            </Setter>
+                                        </Style>
+                                    </ListBox.ItemContainerStyle>
+                                </ListBox>
+                            </TabItem>
+                            
+                            <!-- DXVK-gplasync Tab -->
+                            <TabItem Header="DXVK-gplasync">
+                                <ListBox ItemsSource="{Binding DxvkGplasyncVersions}" 
+                                         SelectedItem="{Binding SelectedDxvkGplasyncVersion}"
+                                         Margin="5"
+                                         DisplayMemberPath="."
+                                         BorderThickness="0">
+                                    <ListBox.ItemContainerStyle>
+                                        <Style TargetType="ListBoxItem">
+                                            <Setter Property="Padding" Value="10,8"/>
+                                            <Setter Property="Margin" Value="0,2"/>
+                                            <Setter Property="Background" Value="White"/>
+                                            <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}"/>
+                                            <Setter Property="BorderThickness" Value="1"/>
+                                            <Setter Property="SnapsToDevicePixels" Value="True"/>
+                                            <Setter Property="Template">
+                                                <Setter.Value>
+                                                    <ControlTemplate TargetType="ListBoxItem">
+                                                        <Border Background="{TemplateBinding Background}"
+                                                                BorderBrush="{TemplateBinding BorderBrush}"
+                                                                BorderThickness="{TemplateBinding BorderThickness}"
+                                                                CornerRadius="4">
+                                                            <ContentPresenter Margin="{TemplateBinding Padding}"/>
+                                                        </Border>
+                                                        <ControlTemplate.Triggers>
+                                                            <Trigger Property="IsSelected" Value="True">
+                                                                <Setter Property="Background" Value="{StaticResource PrimaryLightBrush}"/>
+                                                                <Setter Property="BorderBrush" Value="{StaticResource PrimaryBrush}"/>
+                                                                <Setter Property="Foreground" Value="White"/>
+                                                            </Trigger>
+                                                            <Trigger Property="IsMouseOver" Value="True">
+                                                                <Setter Property="BorderBrush" Value="{StaticResource PrimaryBrush}"/>
+                                                            </Trigger>
+                                                        </ControlTemplate.Triggers>
+                                                    </ControlTemplate>
+                                                </Setter.Value>
+                                            </Setter>
+                                        </Style>
+                                    </ListBox.ItemContainerStyle>
+                                </ListBox>
+                            </TabItem>
+                        </TabControl>
+                        
+                        <!-- No Versions Message -->
+                        <TextBlock Grid.Row="1" 
+                                   Text="No DXVK versions found. Please download DXVK versions from the DXVK Versions tab first." 
+                                   TextWrapping="Wrap"
+                                   HorizontalAlignment="Center"
+                                   VerticalAlignment="Center"
+                                   Visibility="{Binding HasVersions, Converter={StaticResource BooleanToVisibilityConverter}, ConverterParameter=Inverse}"/>
+                        
+                        <!-- Current Status -->
+                        <Border Grid.Row="2"
+                                Background="{StaticResource BackgroundBrush}" 
+                                BorderBrush="{StaticResource BorderBrush}" 
+                                BorderThickness="1" 
+                                CornerRadius="5" 
+                                Padding="10"
+                                Margin="0,15,0,0">
+                            <StackPanel>
+                                <TextBlock Text="Current DXVK Status:" 
+                                           FontWeight="SemiBold" 
+                                           Foreground="{StaticResource TextSecondaryBrush}"/>
+                                
+                                <Grid Margin="0,5,0,0"
+                                      Visibility="{Binding Game.DxvkStatus.Patched, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                    </Grid.RowDefinitions>
+                                    
+                                    <TextBlock Grid.Row="0" Grid.Column="0" 
+                                               Text="Variant: " 
+                                               Foreground="{StaticResource TextSecondaryBrush}" 
+                                               Margin="0,0,10,5"/>
+                                    <TextBlock Grid.Row="0" Grid.Column="1" 
+                                               Text="{Binding Game.DxvkStatus.DxvkType}" 
+                                               Foreground="{StaticResource TextPrimaryBrush}"/>
+                                    
+                                    <TextBlock Grid.Row="1" Grid.Column="0" 
+                                               Text="Version: " 
+                                               Foreground="{StaticResource TextSecondaryBrush}" 
+                                               Margin="0,0,10,5"/>
+                                    <TextBlock Grid.Row="1" Grid.Column="1" 
+                                               Text="{Binding Game.DxvkStatus.DxvkVersion}" 
+                                               Foreground="{StaticResource TextPrimaryBrush}"/>
+                                    
+                                    <TextBlock Grid.Row="2" Grid.Column="0" 
+                                               Text="Applied: " 
+                                               Foreground="{StaticResource TextSecondaryBrush}" 
+                                               Margin="0,0,10,5"/>
+                                    <TextBlock Grid.Row="2" Grid.Column="1" 
+                                               Text="{Binding Game.DxvkStatus.DxvkTimestamp, StringFormat='{}{0:g}', TargetNullValue='Not applied'}" 
+                                               Foreground="{StaticResource TextPrimaryBrush}"/>
+                                    
+                                    <TextBlock Grid.Row="3" Grid.Column="0" 
+                                               Text="Backup: " 
+                                               Foreground="{StaticResource TextSecondaryBrush}" 
+                                               Margin="0,0,10,0"/>
+                                    <TextBlock Grid.Row="3" Grid.Column="1" 
+                                               Text="{Binding Game.DxvkStatus.Backuped, Converter={StaticResource BooleanToStringConverter}, ConverterParameter='Yes'}" 
+                                               Foreground="{StaticResource SuccessBrush}"/>
+                                </Grid>
+                                
+                                <TextBlock Text="DXVK is not active" 
+                                           Foreground="{StaticResource TextSecondaryBrush}"
+                                           Margin="0,5,0,0"
+                                           Visibility="{Binding Game.DxvkStatus.Patched, Converter={StaticResource BooleanToVisibilityInverseConverter}}"/>
+                            </StackPanel>
+                        </Border>
+                    </Grid>
+                </Grid>
+                
+                <!-- Footer -->
+                <Border Grid.Row="2" Background="{StaticResource BackgroundDarkBrush}" Margin="0">
+                    <Grid Margin="15,10">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        
+                        <!-- Diagnose DXVK Button -->
+                        <Button Grid.Column="1" 
+                                Content="Diagnose DXVK" 
+                                Style="{StaticResource InfoButton}"
+                                Command="{Binding DiagnoseDxvkCommand}"
+                                Margin="5,0"/>
+                                
+                        <!-- Revert to DirectX Button -->
+                        <Button Grid.Column="2" 
+                                Content="Revert to DirectX" 
+                                Style="{StaticResource SecondaryButton}"
+                                Command="{Binding RevertToDirectXCommand}"
+                                Visibility="{Binding Game.DxvkStatus.Patched, Converter={StaticResource BooleanToVisibilityConverter}}"
+                                Margin="5,0"/>
+                                
+                        <!-- Cancel Button -->
+                        <Button Grid.Column="3" 
+                                Content="Cancel" 
+                                Style="{StaticResource SecondaryButton}"
+                                Command="{Binding CloseDialogCommand}"
+                                Click="CloseButton_Click"
+                                Margin="5,0"/>
+                        
+                        <Button Grid.Column="4" 
+                                Content="Apply" 
+                                Style="{StaticResource StandardButton}"
+                                Command="{Binding ApplyDxvkCommand}"
+                                IsEnabled="{Binding CanApply}"/>
+                    </Grid>
+                </Border>
+            </Grid>
+        </Border>
+    </Grid>
+</UserControl>

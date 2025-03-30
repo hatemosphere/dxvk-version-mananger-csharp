@@ -1,0 +1,90 @@
+<Window x:Class="DxvkVersionManager.Views.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:local="clr-namespace:DxvkVersionManager.Views"
+        xmlns:viewmodels="clr-namespace:DxvkVersionManager.ViewModels"
+        mc:Ignorable="d"
+        Title="DXVK Version Manager" Height="800" Width="1200"
+        Background="{StaticResource BackgroundBrush}"
+        WindowStartupLocation="CenterScreen">
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        
+        <!-- Tab Navigation -->
+        <Grid Grid.Row="0" Background="White">
+            <StackPanel Orientation="Horizontal" Margin="10,0">
+                <Button x:Name="InstalledGamesTab" 
+                        Style="{StaticResource TabButton}" 
+                        Command="{Binding NavigateToInstalledGamesCommand}">
+                    <TextBlock Text="Installed Games"/>
+                </Button>
+                <Button x:Name="DxvkVersionsTab" 
+                        Style="{StaticResource TabButton}" 
+                        Command="{Binding NavigateToDxvkVersionsCommand}">
+                    <TextBlock Text="DXVK Versions"/>
+                </Button>
+                <Button x:Name="DxvkGplasyncTab" 
+                        Style="{StaticResource TabButton}" 
+                        Command="{Binding NavigateToDxvkGplasyncCommand}">
+                    <TextBlock Text="DXVK-gplasync Versions"/>
+                </Button>
+            </StackPanel>
+        </Grid>
+        
+        <!-- Content Area -->
+        <Grid Grid.Row="1" Margin="20">
+            <ContentControl Content="{Binding CurrentViewModel}">
+                <ContentControl.Resources>
+                    <DataTemplate DataType="{x:Type viewmodels:InstalledGamesViewModel}">
+                        <local:InstalledGamesView DataContext="{Binding}"/>
+                    </DataTemplate>
+                    <DataTemplate DataType="{x:Type viewmodels:DxvkVersionsViewModel}">
+                        <local:DxvkVersionsView DataContext="{Binding}"/>
+                    </DataTemplate>
+                    <DataTemplate DataType="{x:Type viewmodels:DxvkGplasyncViewModel}">
+                        <local:DxvkGplasyncView DataContext="{Binding}"/>
+                    </DataTemplate>
+                </ContentControl.Resources>
+            </ContentControl>
+        </Grid>
+        
+        <!-- Status Bar -->
+        <Grid Grid.Row="2" Background="#F0F0F0" Height="25">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <TextBlock Text="{Binding StatusMessage}" 
+                       Margin="10,0,0,0" 
+                       VerticalAlignment="Center"
+                       Foreground="#666666"/>
+            <ProgressBar Grid.Column="1" 
+                         Width="100" 
+                         Height="4" 
+                         Margin="0,0,10,0"
+                         IsIndeterminate="True"
+                         Visibility="{Binding IsLoading, Converter={StaticResource BooleanToVisibilityConverter}}"
+                         VerticalAlignment="Center"/>
+        </Grid>
+        
+        <!-- Loading Overlay -->
+        <Grid Grid.RowSpan="3" 
+              Visibility="{Binding IsLoading, Converter={StaticResource BooleanToVisibilityConverter}}"
+              Background="#80000000">
+            <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
+                <ProgressBar IsIndeterminate="True" Width="200" Height="4"/>
+                <TextBlock Text="Loading..." 
+                           Foreground="White" 
+                           FontWeight="SemiBold"
+                           HorizontalAlignment="Center" 
+                           Margin="0,10,0,0"/>
+            </StackPanel>
+        </Grid>
+    </Grid>
+</Window>
