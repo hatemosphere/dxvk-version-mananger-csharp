@@ -87,7 +87,7 @@
                                     <TextBlock Margin="0,3,0,0" 
                                                FontSize="12" 
                                                Foreground="#FF9800"
-                                               Text="Missing info: Please select Direct3D version and architecture"
+                                               Text="Detecting architecture..."
                                                Visibility="{Binding Metadata.HasCompleteInfo, Converter={StaticResource BooleanToVisibilityConverter}, ConverterParameter=Inverse}"/>
                                     
                                     <!-- Direct3D Info -->
@@ -102,44 +102,103 @@
                                                    Foreground="{StaticResource TextSecondaryBrush}" 
                                                    FontSize="12" 
                                                    Margin="0,5,5,0"
-                                                   VerticalAlignment="Center"/>
-                                                   
-                                        <ComboBox Grid.Column="1" 
-                                                  Width="200"
-                                                  HorizontalAlignment="Left"
-                                                  Tag="{Binding AppId}"
-                                                  SelectionChanged="DirectXComboBox_SelectionChanged"
-                                                  x:Name="directXComboBox"
-                                                  Loaded="DirectXComboBox_Loaded"
-                                                  IsEnabled="{Binding Metadata.D3dVersionAutoDetected, Converter={StaticResource BooleanInverter}}"
-                                                  IsEditable="True"
-                                                  IsReadOnly="True">
-                                            <ComboBox.Style>
-                                                <Style TargetType="ComboBox" BasedOn="{StaticResource {x:Type ComboBox}}">
-                                                    <Setter Property="Text" Value="Choose Direct3D version"/>
-                                                </Style>
-                                            </ComboBox.Style>
-                                            <ComboBoxItem Content="Direct3D 8"/>
-                                            <ComboBoxItem Content="Direct3D 9"/>
-                                            <ComboBoxItem Content="Direct3D 10"/>
-                                            <ComboBoxItem Content="Direct3D 11"/>
-                                            <ComboBoxItem Content="Direct3D 12"/>
-                                        </ComboBox>
+                                                   VerticalAlignment="Top"/>
+
+                                        <!-- Detected DirectX Versions -->
+                                        <StackPanel Grid.Column="1" 
+                                                    Width="400"
+                                                    HorizontalAlignment="Left">
+                                            
+                                            <!-- Detected DirectX Versions -->
+                                            <StackPanel Orientation="Vertical" Margin="0,0,0,5">
+                                                <StackPanel Orientation="Horizontal" Margin="0,0,0,2">
+                                                    <TextBlock Text="Detected Versions:" 
+                                                               FontSize="11" 
+                                                               Foreground="{StaticResource TextSecondaryBrush}"/>
+                                                    
+                                                    <!-- Removed Multiple versions badge -->
+                                                </StackPanel>
+                                                
+                                                <ItemsControl ItemsSource="{Binding Metadata.AvailableDirect3dVersions}">
+                                                    <ItemsControl.ItemTemplate>
+                                                        <DataTemplate>
+                                                            <Border Background="#f0f0f0" 
+                                                                    CornerRadius="2" 
+                                                                    Padding="5,2" 
+                                                                    Margin="0,0,5,2">
+                                                                <TextBlock Text="{Binding}" FontSize="11"/>
+                                                            </Border>
+                                                        </DataTemplate>
+                                                    </ItemsControl.ItemTemplate>
+                                                    <ItemsControl.ItemsPanel>
+                                                        <ItemsPanelTemplate>
+                                                            <WrapPanel/>
+                                                        </ItemsPanelTemplate>
+                                                    </ItemsControl.ItemsPanel>
+                                                </ItemsControl>
+                                                <TextBlock Text="None detected" 
+                                                           FontSize="11" 
+                                                           Foreground="#999" 
+                                                           Visibility="{Binding Metadata.AvailableDirect3dVersions, Converter={StaticResource ObjectNotNullToVisibilityConverter}, ConverterParameter=Inverse}"
+                                                           Margin="0,2,0,0"/>
+                                            </StackPanel>
+                                            
+                                            <!-- Official DirectX Versions -->
+                                            <StackPanel Orientation="Vertical" Margin="0,5,0,0">
+                                                <StackPanel Orientation="Horizontal">
+                                                    <TextBlock Text="PCGamingWiki:" 
+                                                               FontSize="11" 
+                                                               Foreground="{StaticResource TextSecondaryBrush}" 
+                                                               Margin="0,0,0,2"/>
+                                                </StackPanel>
+                                                
+                                                <ItemsControl ItemsSource="{Binding Metadata.OfficialDirectXVersions}"
+                                                              Visibility="{Binding Metadata.HasWikiInformation, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                                    <ItemsControl.ItemTemplate>
+                                                        <DataTemplate>
+                                                            <Border Background="#e3f2fd" 
+                                                                    BorderThickness="0"
+                                                                    CornerRadius="2" 
+                                                                    Padding="5,2" 
+                                                                    Margin="0,0,5,2">
+                                                                <TextBlock Text="{Binding}" FontSize="11"/>
+                                                            </Border>
+                                                        </DataTemplate>
+                                                    </ItemsControl.ItemTemplate>
+                                                    <ItemsControl.ItemsPanel>
+                                                        <ItemsPanelTemplate>
+                                                            <WrapPanel/>
+                                                        </ItemsPanelTemplate>
+                                                    </ItemsControl.ItemsPanel>
+                                                </ItemsControl>
+                                                <TextBlock Text="No information available" 
+                                                           FontSize="11" 
+                                                           Foreground="#999" 
+                                                           Visibility="{Binding Metadata.HasWikiInformation, Converter={StaticResource BooleanToVisibilityConverter}, ConverterParameter=Inverse}"
+                                                           Margin="0,2,0,0"/>
+                                            </StackPanel>
+                                        </StackPanel>
                                         
-                                        <!-- Auto-detected badge -->
-                                        <Border Grid.Column="1" 
-                                                Background="#4CAF50" 
-                                                CornerRadius="2" 
-                                                Padding="3,1" 
-                                                Margin="210,0,0,0"
-                                                HorizontalAlignment="Left"
-                                                VerticalAlignment="Center"
-                                                Visibility="{Binding Metadata.D3dVersionAutoDetected, Converter={StaticResource BooleanToVisibilityConverter}}">
-                                            <TextBlock Text="Auto-detected" 
-                                                       Foreground="White" 
-                                                       FontSize="10" 
-                                                       FontWeight="SemiBold"/>
-                                        </Border>
+                                        <!-- Badges container -->
+                                        <StackPanel Grid.Column="1" 
+                                                   Orientation="Horizontal"
+                                                   HorizontalAlignment="Right" 
+                                                   VerticalAlignment="Top"
+                                                   Margin="0,0,10,0">
+                                            
+                                            <!-- DXVK Status badge -->
+                                            <Border Background="{Binding DxvkStatus.StatusBackground}" 
+                                                    CornerRadius="2" 
+                                                    Padding="5,1"
+                                                    Margin="0,0,5,0">
+                                                <TextBlock Text="{Binding DxvkStatus.StatusText}" 
+                                                           Foreground="White" 
+                                                           FontSize="10" 
+                                                           FontWeight="SemiBold"/>
+                                            </Border>
+                                            
+                                            <!-- Removed Architecture badges -->
+                                        </StackPanel>
                                     </Grid>
                                     
                                     <!-- Windows Executable Info -->
@@ -156,39 +215,22 @@
                                                    Margin="0,5,5,0"
                                                    VerticalAlignment="Center"/>
                                                    
-                                        <ComboBox Grid.Column="1" 
-                                                  Width="200"
-                                                  HorizontalAlignment="Left"
-                                                  Tag="{Binding AppId}"
-                                                  SelectionChanged="ArchitectureComboBox_SelectionChanged"
-                                                  x:Name="architectureComboBox"
-                                                  Loaded="ArchitectureComboBox_Loaded"
-                                                  IsEnabled="{Binding Metadata.ArchitectureAutoDetected, Converter={StaticResource BooleanInverter}}"
-                                                  IsEditable="True"
-                                                  IsReadOnly="True">
-                                            <ComboBox.Style>
-                                                <Style TargetType="ComboBox" BasedOn="{StaticResource {x:Type ComboBox}}">
-                                                    <Setter Property="Text" Value="Choose architecture"/>
-                                                </Style>
-                                            </ComboBox.Style>
-                                            <ComboBoxItem Content="32-bit"/>
-                                            <ComboBoxItem Content="64-bit"/>
-                                        </ComboBox>
-                                        
-                                        <!-- Auto-detected badge -->
-                                        <Border Grid.Column="1" 
-                                                Background="#4CAF50" 
-                                                CornerRadius="2" 
-                                                Padding="3,1" 
-                                                Margin="210,0,0,0"
-                                                HorizontalAlignment="Left"
-                                                VerticalAlignment="Center"
-                                                Visibility="{Binding Metadata.ArchitectureAutoDetected, Converter={StaticResource BooleanToVisibilityConverter}}">
-                                            <TextBlock Text="Auto-detected" 
-                                                       Foreground="White" 
-                                                       FontSize="10" 
-                                                       FontWeight="SemiBold"/>
-                                        </Border>
+                                        <!-- Architecture display (read-only) -->
+                                        <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                                            <TextBlock Text="{Binding Metadata.Executable64bit, Converter={StaticResource BooleanToStringConverter}, ConverterParameter='64-bit'}" 
+                                                      Visibility="{Binding Metadata.Executable64bit, Converter={StaticResource BooleanToVisibilityConverter}}"
+                                                      FontSize="12" 
+                                                      Margin="0,0,0,0"/>
+                                            <TextBlock Text="{Binding Metadata.Executable32bit, Converter={StaticResource BooleanToStringConverter}, ConverterParameter='32-bit'}" 
+                                                      Visibility="{Binding Metadata.Executable32bit, Converter={StaticResource BooleanToVisibilityConverter}}"
+                                                      FontSize="12" 
+                                                      Margin="0,0,0,0"/>
+                                            <TextBlock Text="Auto-detecting..." 
+                                                      Visibility="{Binding Metadata.HasCompleteInfo, Converter={StaticResource BooleanToVisibilityConverter}, ConverterParameter=Inverse}"
+                                                      FontSize="12" 
+                                                      Foreground="#FF9800"
+                                                      Margin="0,0,0,0"/>
+                                        </StackPanel>
                                     </Grid>
                                     
                                     <!-- DXVK Status Info - Dynamic but crash-safe -->
@@ -224,7 +266,7 @@
                                             Visibility="{Binding Metadata.SupportsVulkan, Converter={StaticResource BooleanToVisibilityConverter}, ConverterParameter=Inverse}">
                                         <Button.ToolTip>
                                             <ToolTip>
-                                                <TextBlock Text="Please select both Direct3D version and architecture to enable DXVK management." 
+                                                <TextBlock Text="Please wait for architecture detection to complete before managing DXVK." 
                                                            Visibility="{Binding Metadata.HasCompleteInfo, Converter={StaticResource BooleanToVisibilityConverter}, ConverterParameter=Inverse}"/>
                                             </ToolTip>
                                         </Button.ToolTip>

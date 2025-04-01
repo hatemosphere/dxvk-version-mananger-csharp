@@ -10,42 +10,57 @@ namespace DxvkVersionManager.Services.Implementations;
 [System.Runtime.Versioning.SupportedOSPlatform("windows")]
 public class SteamService : ISteamService
 {
-    private readonly string _userDataPath;
-    private readonly string _metadataCachePath;
+    private readonly string _dataPath; // Use the application's data path
+    private readonly string _metadataCachePath; // = <dataPath>/game-metadata-cache
     private List<SteamGame>? _cachedGames;
     private readonly LoggingService _logger;
+    private readonly IPCGamingWikiService _pcGamingWikiService;
+    private string _steamInstallPath = string.Empty;
     
-    public SteamService(string userDataPath)
+    public SteamService(IPCGamingWikiService pcGamingWikiService, string dataPath)
     {
-        ArgumentNullException.ThrowIfNull(userDataPath);
-        _userDataPath = userDataPath;
-        _metadataCachePath = Path.Combine(_userDataPath, "game-metadata-cache");
         _logger = LoggingService.Instance;
+        _pcGamingWikiService = pcGamingWikiService;
+        _dataPath = dataPath;
+        _metadataCachePath = Path.Combine(_dataPath, "game-metadata-cache");
         
-        // Ensure cache directory exists
-        if (!Directory.Exists(_metadataCachePath))
+        try
         {
-            Directory.CreateDirectory(_metadataCachePath);
-            _logger.LogInformation($"Created game metadata cache directory: {_metadataCachePath}");
+            // Ensure cache directory exists
+            if (!Directory.Exists(_metadataCachePath))
+            {
+                Directory.CreateDirectory(_metadataCachePath);
+                _logger.LogInformation($"Created game metadata cache directory: {_metadataCachePath}");
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error initializing SteamService paths");
         }
     }
     
-    public async Task<List<SteamGame>> GetInstalledGamesAsync()
+    public async Task<List<SteamGame>> GetInstalledGamesAsync(bool forceRefresh = true)
     {
         try
         {
             _logger.LogInformation("Fetching installed Steam games...");
             
-            // Get Steam installation path from registry
-            string steamPath = GetSteamInstallPath();
+            // Only use cached games if not forcing refresh
+            if (_cachedGames != null && !forceRefresh)
+            {
+                return _cachedGames;
+            }
             
-            if (string.IsNullOrEmpty(steamPath) || !Directory.Exists(steamPath))
+            // Get Steam installation path from registry
+            _steamInstallPath = GetSteamInstallPath();
+            
+            if (string.IsNullOrEmpty(_steamInstallPath) || !Directory.Exists(_steamInstallPath))
             {
                 _logger.LogError($"Steam installation directory not found");
                 return new List<SteamGame>();
             }
             
-            string steamAppsPath = Path.Combine(steamPath, "steamapps");
+            string steamAppsPath = Path.Combine(_steamInstallPath, "steamapps");
             
             // Read libraryfolders.vdf
             var libraryFoldersPath = Path.Combine(steamAppsPath, "libraryfolders.vdf");
@@ -129,6 +144,20 @@ public class SteamService : ISteamService
                                     // Get game metadata
                                     var metadata = await GetGameMetadataAsync(appId, gameName, installDir);
                                     
+                                    // Explicitly fetch PCGamingWiki data for each game
+                                    if (metadata != null)
+                                    {
+                                        _logger.LogWarning($"Explicitly fetching PCGamingWiki data for {gameName} (AppID: {appId})");
+                                        try
+                                        {
+                                            await FetchPCGamingWikiInfoAsync(metadata);
+                                        }
+                                        catch (Exception wikiEx)
+                                        {
+                                            _logger.LogError(wikiEx, $"Error fetching PCGamingWiki data: {wikiEx.Message}");
+                                        }
+                                    }
+                                    
                                     // Get DXVK status
                                     var dxvkStatus = await GetGameDxvkStatusAsync(appId);
                                     
@@ -206,6 +235,16 @@ public class SteamService : ISteamService
                     if (string.IsNullOrEmpty(metadata.CoverUrl))
                     {
                         metadata.CoverUrl = GetSteamGameCoverUrl(appId);
+                    }
+                    
+                    // Ensure lists are sorted even when loaded from cache
+                    if (metadata.AvailableDirect3dVersions != null)
+                    {
+                        SortDirectXVersions(metadata.AvailableDirect3dVersions);
+                    }
+                    if (metadata.OfficialDirectXVersions != null)
+                    {
+                        SortDirectXVersions(metadata.OfficialDirectXVersions);
                     }
                     
                     return metadata;
@@ -336,6 +375,9 @@ public class SteamService : ISteamService
             
             // For DirectX detection, examine multiple executables to improve accuracy
             await DetectDirectXVersionFromMultipleExesAsync(exeFiles, metadata);
+            
+            // Fetch PCGamingWiki information
+            await FetchPCGamingWikiInfoAsync(metadata);
         }
         catch (Exception ex)
         {
@@ -485,49 +527,107 @@ public class SteamService : ISteamService
             // Determine the DirectX version based on detected dependencies
             bool detected = false;
             string detectionMethod = string.Empty;
+            List<string> allDetectedVersions = new List<string>();
+            string? primaryExePath = null; // Path of the exe associated with the highest detected DX version
+            
+            // Helper function to track the highest priority executable found so far
+            void UpdatePrimaryExe(string dll)
+            {
+                // Only update if we haven't found a primary exe yet, or if this DLL is higher priority
+                if (primaryExePath == null || Array.IndexOf(dxVersions, dll) < Array.IndexOf(dxVersions, GetDllForVersion(allDetectedVersions.FirstOrDefault()))) 
+                {
+                    // Find the executable associated with this DLL
+                    if (detectedDlls.TryGetValue(dll, out var exeList) && exeList.Count > 0)
+                    {
+                        // Find the full path for the first exe in the list (prioritize real exes over '[Found in game directory]')
+                        var targetExeName = exeList.FirstOrDefault(e => e != "[Found in game directory]") ?? exeList.First();
+                        if(targetExeName != "[Found in game directory]")
+                        {
+                             // Find the full path among the checked exes
+                            primaryExePath = exesToCheck.FirstOrDefault(fullPath => Path.GetFileName(fullPath).Equals(targetExeName, StringComparison.OrdinalIgnoreCase));
+                        }
+                    }
+                }
+            }
+            
+            // Helper function to get the primary DLL for a given version string (e.g., "Direct3D 12" -> "d3d12.dll")
+            string? GetDllForVersion(string? version)
+            {
+                if (version == null) return null;
+                if (version.Contains("12")) return "d3d12.dll";
+                if (version.Contains("11")) return "d3d11.dll";
+                if (version.Contains("10")) return "d3d10.dll";
+                if (version.Contains("9")) return "d3d9.dll";
+                if (version.Contains("8")) return "d3d8.dll";
+                return null;
+            }
             
             if (detectedDlls.ContainsKey("d3d12.dll"))
             {
-                metadata.Direct3dVersions = "Direct3D 12";
-                detectionMethod = $"Found d3d12.dll dependency in: {string.Join(", ", detectedDlls["d3d12.dll"])}";
+                allDetectedVersions.Add("Direct3D 12");
+                UpdatePrimaryExe("d3d12.dll");
                 _logger.LogInformation($"Detected DirectX 12 usage for {metadata.Name}");
                 detected = true;
             }
-            else if (detectedDlls.ContainsKey("d3d11.dll"))
+            
+            if (detectedDlls.ContainsKey("d3d11.dll"))
             {
-                metadata.Direct3dVersions = "Direct3D 11";
-                detectionMethod = $"Found d3d11.dll dependency in: {string.Join(", ", detectedDlls["d3d11.dll"])}";
+                allDetectedVersions.Add("Direct3D 11");
+                UpdatePrimaryExe("d3d11.dll");
                 _logger.LogInformation($"Detected DirectX 11 usage for {metadata.Name}");
                 detected = true;
             }
-            else if (detectedDlls.ContainsKey("d3d10.dll"))
+            
+            if (detectedDlls.ContainsKey("d3d10.dll"))
             {
-                metadata.Direct3dVersions = "Direct3D 10";
-                detectionMethod = $"Found d3d10.dll dependency in: {string.Join(", ", detectedDlls["d3d10.dll"])}";
+                allDetectedVersions.Add("Direct3D 10");
+                UpdatePrimaryExe("d3d10.dll");
                 _logger.LogInformation($"Detected DirectX 10 usage for {metadata.Name}");
                 detected = true;
             }
-            else if (detectedDlls.ContainsKey("d3d9.dll"))
+            
+            if (detectedDlls.ContainsKey("d3d9.dll"))
             {
-                metadata.Direct3dVersions = "Direct3D 9";
-                detectionMethod = $"Found d3d9.dll dependency in: {string.Join(", ", detectedDlls["d3d9.dll"])}";
+                allDetectedVersions.Add("Direct3D 9");
+                UpdatePrimaryExe("d3d9.dll");
                 _logger.LogInformation($"Detected DirectX 9 usage for {metadata.Name}");
                 detected = true;
             }
-            else if (detectedDlls.ContainsKey("d3d8.dll"))
+            
+            if (detectedDlls.ContainsKey("d3d8.dll"))
             {
-                metadata.Direct3dVersions = "Direct3D 8";
-                detectionMethod = $"Found d3d8.dll dependency in: {string.Join(", ", detectedDlls["d3d8.dll"])}";
+                allDetectedVersions.Add("Direct3D 8");
+                UpdatePrimaryExe("d3d8.dll");
                 _logger.LogInformation($"Detected DirectX 8 usage for {metadata.Name}");
                 detected = true;
             }
-            else if (detectedDlls.ContainsKey("dxgi.dll"))
+            
+            if (!detected && detectedDlls.ContainsKey("dxgi.dll"))
             {
                 // DXGI is used by DX10/11/12, default to 11 if no specific version is found
-                metadata.Direct3dVersions = "Direct3D 11";
-                detectionMethod = $"Found dxgi.dll dependency in: {string.Join(", ", detectedDlls["dxgi.dll"])}";
+                allDetectedVersions.Add("Direct3D 11");
+                UpdatePrimaryExe("dxgi.dll");
                 _logger.LogInformation($"Detected DXGI (defaulting to DX11) usage for {metadata.Name}");
                 detected = true;
+            }
+            
+            // Sort versions from oldest to newest
+            SortDirectXVersions(allDetectedVersions);
+            
+            // Set detected versions in metadata
+            metadata.AvailableDirect3dVersions = allDetectedVersions.Count > 0 ? allDetectedVersions : null;
+            metadata.SupportsMultipleDirect3dVersions = allDetectedVersions.Count > 1;
+
+            // Store the path of the primary executable
+            metadata.TargetExecutablePath = primaryExePath;
+            _logger.LogInformation($"Target executable for DXVK installation set to: {primaryExePath ?? "Not Found"}");
+            
+            // Set the primary version (highest available) if detected
+            if (allDetectedVersions.Count > 0)
+            {
+                // Get the newest version (last in sorted list) for primary
+                metadata.Direct3dVersions = allDetectedVersions[allDetectedVersions.Count - 1]; 
+                detectionMethod = $"Found dependencies for multiple DirectX versions: {string.Join(", ", allDetectedVersions)}";
             }
             else
             {
@@ -623,7 +723,7 @@ public class SteamService : ISteamService
     {
         try
         {
-            var metadataPath = Path.Combine(_metadataCachePath, $"{appId}.json");
+            var metadataPath = GetMetadataFilePath(appId);
             GameMetadata metadata;
             
             // Load existing metadata if available
@@ -668,6 +768,24 @@ public class SteamService : ISteamService
                     case "custom_exec":
                         metadata.CustomExec = update.Value?.ToString()?.Equals("true", StringComparison.OrdinalIgnoreCase) ?? false;
                         break;
+                    case "d3dVersionAutoDetected":
+                        metadata.D3dVersionAutoDetected = update.Value?.ToString()?.Equals("true", StringComparison.OrdinalIgnoreCase) ?? false;
+                        break;
+                    case "detectionMethod":
+                        metadata.DetectionMethod = update.Value?.ToString() ?? string.Empty;
+                        break;
+                    case "availableDirect3dVersions":
+                        if (update.Value is List<string> versionsList)
+                        {
+                            metadata.AvailableDirect3dVersions = versionsList;
+                        }
+                        break;
+                    case "supportsMultipleDirect3dVersions":
+                        metadata.SupportsMultipleDirect3dVersions = update.Value?.ToString()?.Equals("true", StringComparison.OrdinalIgnoreCase) ?? false;
+                        break;
+                    case "targetExecutablePath":
+                        metadata.TargetExecutablePath = update.Value?.ToString();
+                        break;
                 }
             }
             
@@ -698,41 +816,51 @@ public class SteamService : ISteamService
         }
     }
     
-    public async Task<DxvkStatus> GetGameDxvkStatusAsync(string appId)
+    public async Task<DxvkStatus?> GetGameDxvkStatusAsync(string appId)
     {
         try
         {
-            var statusPath = Path.Combine(_metadataCachePath, $"{appId}_dxvk.json");
-            if (File.Exists(statusPath))
+            // Construct the path to the status file in the central status directory
+            var statusDir = Path.Combine(_dataPath, "dxvk-status");
+            var statusFilePath = Path.Combine(statusDir, $"{appId}.json");
+
+            // Check if the status file exists
+            if (File.Exists(statusFilePath))
             {
                 try
                 {
-                    var json = await File.ReadAllTextAsync(statusPath);
+                    var json = await File.ReadAllTextAsync(statusFilePath);
                     var status = JsonSerializer.Deserialize<DxvkStatus>(json);
                     
-                    // Always return a new DxvkStatus if deserialization returns null
                     if (status == null)
                     {
-                        _logger.LogWarning($"Deserialized DxvkStatus was null for game {appId}, creating new instance");
-                        return new DxvkStatus();
+                        _logger.LogWarning($"Deserialized DxvkStatus was null for game {appId}. Status file might be corrupt. Path: {statusFilePath}");
+                        return new DxvkStatus { Patched = false }; // Treat corrupt file as not patched
                     }
                     
+                    _logger.LogDebug($"Loaded DXVK status for game {appId}: Patched={status.Patched}, Version={status.DxvkVersion}");
                     return status;
+                }
+                catch (JsonException jsonEx)
+                {
+                     _logger.LogError(jsonEx, $"Error deserializing DXVK status JSON for game {appId}. Path: {statusFilePath}");
+                     return new DxvkStatus { Patched = false }; // Treat corrupt file as not patched
                 }
                 catch (Exception deserializeEx)
                 {
-                    _logger.LogError(deserializeEx, $"Error deserializing DXVK status for game {appId}, creating new instance");
-                    return new DxvkStatus();
+                    _logger.LogError(deserializeEx, $"Error reading/deserializing DXVK status file for game {appId}. Path: {statusFilePath}");
+                    return new DxvkStatus { Patched = false }; // Treat error as not patched
                 }
             }
             
-            _logger.LogInformation($"No DXVK status file found for game {appId}, creating new instance");
-            return new DxvkStatus();
+            // If status file doesn't exist, the game is considered not patched
+            _logger.LogDebug($"No DXVK status file found for game {appId} at {statusFilePath}. Assuming not patched.");
+            return new DxvkStatus { Patched = false };
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, $"Error getting DXVK status for game {appId}, creating new instance");
-            return new DxvkStatus();
+            _logger.LogError(ex, $"General error getting DXVK status for game {appId}");
+            return new DxvkStatus { Patched = false }; // Treat error as not patched
         }
     }
     
@@ -942,15 +1070,15 @@ public class SteamService : ISteamService
             var results = new List<GameInstallationStatus>();
             
             // Get Steam installation path from registry
-            string steamPath = GetSteamInstallPath();
+            _steamInstallPath = GetSteamInstallPath();
             
-            if (string.IsNullOrEmpty(steamPath) || !Directory.Exists(steamPath))
+            if (string.IsNullOrEmpty(_steamInstallPath) || !Directory.Exists(_steamInstallPath))
             {
                 _logger.LogError($"Steam installation directory not found");
                 return results;
             }
             
-            string steamAppsPath = Path.Combine(steamPath, "steamapps");
+            string steamAppsPath = Path.Combine(_steamInstallPath, "steamapps");
             
             // Read libraryfolders.vdf
             var libraryFoldersPath = Path.Combine(steamAppsPath, "libraryfolders.vdf");
@@ -1025,31 +1153,69 @@ public class SteamService : ISteamService
         }
     }
 
-    // Add method to get metadata file path
+    // Method to get the specific metadata file path
     private string GetMetadataFilePath(string appId)
     {
         return Path.Combine(_metadataCachePath, $"{appId}.json");
     }
 
     // Add method to save game metadata
-    private async Task<bool> SaveGameMetadataAsync(string appId, GameMetadata metadata)
+    private async Task SaveGameMetadataAsync(string appId, GameMetadata metadata)
     {
         try
-        {
-            var metadataFilePath = GetMetadataFilePath(appId);
-            var json = JsonSerializer.Serialize(metadata, new JsonSerializerOptions 
-            { 
-                WriteIndented = true 
-            });
+        {            
+            // Ensure lists are sorted before saving
+            if (metadata.AvailableDirect3dVersions != null)
+            {
+                SortDirectXVersions(metadata.AvailableDirect3dVersions);
+            }
+            if (metadata.OfficialDirectXVersions != null)
+            {
+                SortDirectXVersions(metadata.OfficialDirectXVersions);
+            }
+
+            _logger.LogInformation($"Saving complete metadata for game with AppID {appId}");
             
-            await File.WriteAllTextAsync(metadataFilePath, json);
-            _logger.LogInformation($"Saved metadata for game with AppID {appId}");
-            return true;
+            var metadataDict = new Dictionary<string, object>
+            {
+                ["name"] = metadata.Name,
+                ["installDir"] = metadata.InstallDir,
+                ["pageName"] = metadata.PageName,
+                ["executable32bit"] = metadata.Executable32bit,
+                ["executable64bit"] = metadata.Executable64bit,
+                ["direct3dVersions"] = metadata.Direct3dVersions,
+                ["d3dVersionAutoDetected"] = metadata.D3dVersionAutoDetected,
+                ["architectureAutoDetected"] = metadata.ArchitectureAutoDetected,
+                ["detectionMethod"] = metadata.DetectionMethod,
+                ["detailedDetectionInfo"] = metadata.DetailedDetectionInfo,
+                ["targetExecutablePath"] = metadata.TargetExecutablePath ?? string.Empty
+            };
+            
+            // Add PCGamingWiki information
+            metadataDict["hasWikiInformation"] = metadata.HasWikiInformation;
+            
+            if (metadata.OfficialDirectXVersions != null && metadata.OfficialDirectXVersions.Count > 0)
+            {
+                metadataDict["officialDirectXVersions"] = metadata.OfficialDirectXVersions;
+            }
+            
+            // Add multi-DX support if available
+            if (metadata.SupportsMultipleDirect3dVersions)
+            {
+                metadataDict["supportsMultipleDirect3dVersions"] = metadata.SupportsMultipleDirect3dVersions;
+            }
+            
+            if (metadata.AvailableDirect3dVersions != null && metadata.AvailableDirect3dVersions.Count > 0)
+            {
+                metadataDict["availableDirect3dVersions"] = metadata.AvailableDirect3dVersions;
+            }
+            
+            await SaveCustomGameMetadataAsync(appId, metadataDict);
+            _logger.LogInformation($"Saved complete metadata for game with AppID {appId}");
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, $"Error saving metadata for game with AppID {appId}");
-            return false;
+            _logger.LogError(ex, $"Error saving complete metadata for game with AppID {appId}");
         }
     }
 
@@ -1057,5 +1223,418 @@ public class SteamService : ISteamService
     {
         // Use Steam's CDN for game header images
         return $"https://cdn.akamai.steamstatic.com/steam/apps/{appId}/header.jpg";
+    }
+
+    // Fetch PCGamingWiki information for a game
+    private async Task FetchPCGamingWikiInfoAsync(GameMetadata metadata)
+    {
+        // DEBUG: Log received metadata
+        _logger.LogDebug($"FetchPCGamingWikiInfoAsync received: AppId='{metadata.AppId ?? "NULL"}', Name='{metadata.Name ?? "NULL"}'");
+        
+        try
+        {
+            if (string.IsNullOrEmpty(metadata.AppId))
+            {
+                _logger.LogWarning("Cannot fetch PCGamingWiki info: AppID is missing");
+                return;
+            }
+            
+            _logger.LogInformation($"Fetching PCGamingWiki information for {metadata.Name} (AppID: {metadata.AppId})");
+            
+            // Initialize the lists if they're null
+            if (metadata.OfficialDirectXVersions == null)
+            {
+                metadata.OfficialDirectXVersions = new List<string>();
+            }
+            
+            // Get officially supported DirectX versions using AppID
+            var officialDxVersions = await _pcGamingWikiService.GetSupportedDirectXVersionsAsync(metadata.AppId);
+            _logger.LogDebug($"Received {officialDxVersions.Count} official DirectX versions from PCGamingWiki for {metadata.Name}");
+            
+            // Clear existing versions and add new ones
+            metadata.OfficialDirectXVersions.Clear();
+            if (officialDxVersions.Count > 0)
+            {
+                foreach (var version in officialDxVersions)
+                {
+                    metadata.OfficialDirectXVersions.Add(version);
+                    _logger.LogDebug($"Added version: {version}");
+                }
+            }
+            
+            // Set the wiki information flag - based on whether we found DirectX versions
+            metadata.HasWikiInformation = officialDxVersions.Count > 0;
+            
+            _logger.LogInformation($"Found {officialDxVersions.Count} official DirectX versions for {metadata.Name} (AppID: {metadata.AppId})");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, $"Error fetching PCGamingWiki information for {metadata.Name} (AppID: {metadata.AppId})");
+        }
+    }
+
+    public async Task<List<SteamGame>> LoadGamesAsync()
+    {
+        try
+        {
+            _logger.LogWarning("LOAD GAMES DEBUG: Starting to load games");
+            var games = new List<SteamGame>();
+            var steamPaths = await FindSteamPathsAsync();
+            if (steamPaths.Count == 0)
+            {
+                _logger.LogWarning("No Steam installation found");
+                return games;
+            }
+            
+            var steamAppsPath = FindSteamAppsPath(steamPaths[0]);
+            if (string.IsNullOrEmpty(steamAppsPath))
+            {
+                _logger.LogWarning("SteamApps directory not found");
+                return games;
+            }
+            
+            _logger.LogInformation("Fetching installed Steam games...");
+            
+            // Get all Steam library folders
+            var libraryFolders = await GetLibraryFoldersAsync(steamAppsPath);
+            _logger.LogDebug($"Found {libraryFolders.Count} Steam library folders");
+            
+            // Debug log each library folder
+            int libraryIndex = 1;
+            foreach (var folder in libraryFolders)
+            {
+                _logger.LogDebug($"Library {libraryIndex++}: {folder}");
+            }
+            
+            // For each library, process all manifest files
+            var processedManifests = new HashSet<string>(); // Track processed manifests to avoid duplicates
+            
+            foreach (var libraryFolder in libraryFolders)
+            {
+                var manifestFiles = Directory.GetFiles(libraryFolder, "appmanifest_*.acf");
+                
+                foreach (var manifestFile in manifestFiles)
+                {
+                    try
+                    {
+                        // Skip already processed manifests
+                        if (processedManifests.Contains(Path.GetFileName(manifestFile)))
+                        {
+                            continue;
+                        }
+                        processedManifests.Add(Path.GetFileName(manifestFile));
+                        
+                        _logger.LogDebug($"Processing manifest: {manifestFile} for AppID: {Path.GetFileNameWithoutExtension(manifestFile).Replace("appmanifest_", "")}");
+                        
+                        // Parse the manifest file
+                        var game = await ParseManifestFileAsync(manifestFile, libraryFolder);
+                        
+                        if (game == null) continue;
+                        
+                        // Load or create metadata
+                        _logger.LogWarning($"LOAD GAMES DEBUG: Getting metadata for {game.Name} (AppID: {game.AppId})");
+                        var metadata = await GetGameMetadataAsync(game.AppId, game.Name, game.InstallDir);
+                        if (metadata != null)
+                        {
+                            game.Metadata = metadata;
+                            
+                            // If installation directory is not set, update it
+                            if (string.IsNullOrEmpty(metadata.InstallDir))
+                            {
+                                metadata.InstallDir = game.InstallDir;
+                                await SaveCustomGameMetadataAsync(game.AppId, new Dictionary<string, object> { ["installDir"] = game.InstallDir });
+                            }
+                            
+                            // Always fetch PCGamingWiki data for each game
+                            _logger.LogWarning($"LOAD GAMES DEBUG: About to fetch PCGamingWiki data for {game.Name} (AppID: {game.AppId})");
+                            bool wikiSuccess = false;
+                            try
+                            {
+                                await FetchPCGamingWikiInfoAsync(game.Metadata);
+                                wikiSuccess = true;
+                                _logger.LogWarning($"LOAD GAMES DEBUG: PCGamingWiki fetch COMPLETED for {game.Name}");
+                            }
+                            catch (Exception wikiEx)
+                            {
+                                _logger.LogError(wikiEx, $"LOAD GAMES DEBUG: Critical error fetching PCGamingWiki data: {wikiEx.Message}");
+                            }
+                            _logger.LogWarning($"LOAD GAMES DEBUG: PCGamingWiki fetch result: {(wikiSuccess ? "Success" : "Failed")}");
+                        }
+                        else
+                        {
+                            // Auto-detect properties for this game
+                            _logger.LogInformation($"Auto-detecting properties for {game.Name} at {game.InstallDir}");
+                            var newMetadata = new GameMetadata
+                            {
+                                AppId = game.AppId,
+                                Name = game.Name,
+                                InstallDir = game.InstallDir
+                            };
+                            await DetectGamePropertiesAsync(newMetadata);
+                            game.Metadata = newMetadata;
+                            
+                            // Also get PCGamingWiki information for newly detected games
+                            _logger.LogWarning($"LOAD GAMES DEBUG: About to fetch PCGamingWiki data for new game {game.Name}");
+                            bool wikiSuccess = false;
+                            try
+                            {
+                                await FetchPCGamingWikiInfoAsync(game.Metadata);
+                                wikiSuccess = true;
+                                _logger.LogWarning($"LOAD GAMES DEBUG: PCGamingWiki fetch COMPLETED for new game {game.Name}");
+                            }
+                            catch (Exception wikiEx)
+                            {
+                                _logger.LogError(wikiEx, $"LOAD GAMES DEBUG: Critical error fetching PCGamingWiki data: {wikiEx.Message}");
+                            }
+                            _logger.LogWarning($"LOAD GAMES DEBUG: PCGamingWiki fetch result: {(wikiSuccess ? "Success" : "Failed")}");
+                            
+                            // Save the detected metadata
+                            if (game.Metadata != null)
+                            {
+                                await SaveGameMetadataAsync(game.AppId, game.Metadata);
+                            }
+                        }
+                        
+                        // Get DXVK status (handle potential null)
+                        game.DxvkStatus = await GetGameDxvkStatusAsync(game.AppId);
+                        if (game.DxvkStatus == null)
+                        {
+                            _logger.LogWarning($"GetGameDxvkStatusAsync returned null for {game.Name}. Assigning default status.");
+                            game.DxvkStatus = new DxvkStatus { Patched = false };
+                        }
+                        
+                        games.Add(game);
+                        _logger.LogDebug($"Added game to list: [{game.AppId}] {game.Name} at {game.InstallDir}");
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, $"Error processing manifest file: {manifestFile}");
+                    }
+                }
+            }
+            
+            // Filter out Steamworks Common Redistributables and similar utility "games"
+            var filteredGames = games
+                .Where(g => !g.Name.Contains("Steamworks Common Redistributables"))
+                .ToList();
+            
+            _logger.LogInformation($"Found {filteredGames.Count} installed Steam games (after filtering)");
+            
+            // Debug log the final game list
+            foreach (var game in filteredGames)
+            {
+                _logger.LogDebug($"Final game list item: [{game.AppId}] {game.Name} at {game.InstallDir}");
+            }
+            
+            _logger.LogWarning("LOAD GAMES DEBUG: Completed loading games");
+            return filteredGames;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error loading installed Steam games");
+            return new List<SteamGame>();
+        }
+    }
+
+    // Get Steam library folders asynchronously
+    private async Task<List<string>> GetLibraryFoldersAsync(string steamAppsPath)
+    {
+        try
+        {
+            var libraryFolders = new List<string> { steamAppsPath };
+            
+            // Read libraryfolders.vdf
+            var libraryFoldersPath = Path.Combine(steamAppsPath, "libraryfolders.vdf");
+            if (!File.Exists(libraryFoldersPath))
+            {
+                _logger.LogError($"Steam library folders file not found: {libraryFoldersPath}");
+                return libraryFolders;
+            }
+            
+            // Read file content asynchronously
+            var vdfContent = await File.ReadAllTextAsync(libraryFoldersPath);
+            
+            // VDF parsing for newer Steam format (v2)
+            var pathMatches = Regex.Matches(vdfContent, "\"path\"\\s+\"(.+?)\"", RegexOptions.Singleline);
+            foreach (Match match in pathMatches)
+            {
+                if (match.Success)
+                {
+                    var path = match.Groups[1].Value.Replace("\\\\", "\\");
+                    var libSteamAppsPath = Path.Combine(path, "steamapps");
+                    if (Directory.Exists(libSteamAppsPath))
+                    {
+                        libraryFolders.Add(libSteamAppsPath);
+                        _logger.LogDebug($"Found Steam library folder: {libSteamAppsPath}");
+                    }
+                }
+            }
+            
+            // VDF parsing for older Steam format (legacy)
+            if (libraryFolders.Count == 1) // Only the main Steam folder
+            {
+                var legacyMatches = Regex.Matches(vdfContent, "\"\\d+\"\\s+\"(.+?)\"", RegexOptions.Singleline);
+                foreach (Match match in legacyMatches)
+                {
+                    if (match.Success)
+                    {
+                        var path = match.Groups[1].Value.Replace("\\\\", "\\");
+                        var libSteamAppsPath = Path.Combine(path, "steamapps");
+                        if (Directory.Exists(libSteamAppsPath))
+                        {
+                            libraryFolders.Add(libSteamAppsPath);
+                            _logger.LogDebug($"Found Steam library folder (legacy format): {libSteamAppsPath}");
+                        }
+                    }
+                }
+            }
+            
+            // Remove duplicate library folders
+            return libraryFolders.Distinct().ToList();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, $"Error parsing Steam library folders");
+            return new List<string> { steamAppsPath };
+        }
+    }
+    
+    // Parse manifest file and return a SteamGame object
+    private async Task<SteamGame?> ParseManifestFileAsync(string manifestFile, string libraryFolder)
+    {
+        try
+        {
+            var content = await File.ReadAllTextAsync(manifestFile);
+            var appId = Path.GetFileNameWithoutExtension(manifestFile).Replace("appmanifest_", "");
+            
+            // Check if the game is actually installed by looking at StateFlags
+            var stateFlagsMatch = Regex.Match(content, "\"StateFlags\"\\s+\"(\\d+)\"");
+            var stateFlags = 0;
+            if (stateFlagsMatch.Success)
+            {
+                int.TryParse(stateFlagsMatch.Groups[1].Value, out stateFlags);
+            }
+            
+            // Check installation status - StateFlags 4 or 1026 typically indicate an installed game
+            bool isInstalled = (stateFlags & 4) != 0; // Check if bit 2 is set (value 4)
+            
+            if (!isInstalled)
+            {
+                _logger.LogDebug($"Skipping game with AppID {appId} as it doesn't appear to be installed (StateFlags: {stateFlags})");
+                return null;
+            }
+            
+            // Extract game name and install directory
+            var nameMatch = Regex.Match(content, "\"name\"\\s+\"(.+?)\"");
+            var installDirMatch = Regex.Match(content, "\"installdir\"\\s+\"(.+?)\"");
+            
+            if (nameMatch.Success && installDirMatch.Success)
+            {
+                var gameName = nameMatch.Groups[1].Value;
+                // Use the library root path and properly construct path to steamapps/common
+                var libraryRoot = Path.GetDirectoryName(libraryFolder); // Gets the parent of the steamapps folder
+                if (libraryRoot != null)
+                {
+                    // Explicitly construct path with steamapps/common included
+                    var installDir = Path.Combine(libraryRoot, "steamapps", "common", installDirMatch.Groups[1].Value);
+                    
+                    // Basic verification that the directory exists
+                    if (Directory.Exists(installDir))
+                    {
+                        return new SteamGame
+                        {
+                            AppId = appId,
+                            Name = gameName,
+                            InstallDir = installDir
+                        };
+                    }
+                    else
+                    {
+                        _logger.LogWarning($"Skipping game with non-existent directory: [{appId}] {gameName} at {installDir}");
+                    }
+                }
+            }
+            
+            return null;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, $"Error processing manifest file: {manifestFile}");
+            return null;
+        }
+    }
+
+    private async Task<List<string>> FindSteamPathsAsync()
+    {
+        var paths = new List<string>();
+        
+        // Try to get Steam installation path from registry
+        string regPath = GetSteamInstallPath();
+        if (!string.IsNullOrEmpty(regPath) && Directory.Exists(regPath))
+        {
+            _logger.LogInformation($"Found Steam installation in registry (64-bit): {regPath}");
+            paths.Add(regPath);
+        }
+        
+        // Other common Steam installation paths
+        var commonPaths = new[]
+        {
+            @"C:\Program Files (x86)\Steam",
+            @"C:\Program Files\Steam",
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "Steam"),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Steam")
+        };
+        
+        foreach (var path in commonPaths)
+        {
+            if (!paths.Contains(path) && Directory.Exists(path))
+            {
+                _logger.LogInformation($"Found Steam installation in common path: {path}");
+                paths.Add(path);
+            }
+        }
+        
+        return await Task.FromResult(paths);
+    }
+    
+    private string FindSteamAppsPath(string steamInstallPath)
+    {
+        _steamInstallPath = steamInstallPath; // Store for future use
+        string steamAppsPath = Path.Combine(steamInstallPath, "steamapps");
+        
+        if (Directory.Exists(steamAppsPath))
+        {
+            return steamAppsPath;
+        }
+        
+        // Try alternate case (SteamApps vs steamapps)
+        steamAppsPath = Path.Combine(steamInstallPath, "SteamApps");
+        if (Directory.Exists(steamAppsPath))
+        {
+            return steamAppsPath;
+        }
+        
+        _logger.LogWarning($"SteamApps directory not found in {steamInstallPath}");
+        return string.Empty;
+    }
+
+    private void SortDirectXVersions(List<string> versions)
+    {
+        versions.Sort((a, b) =>
+        {
+            // Helper function to extract version number
+            int GetVersionNumber(string version)
+            {
+                if (version.Contains("8")) return 8;
+                if (version.Contains("9")) return 9;
+                if (version.Contains("10")) return 10;
+                if (version.Contains("11")) return 11;
+                if (version.Contains("12")) return 12;
+                return 0;
+            }
+            
+            // Sort by version number (ascending - oldest first)
+            return GetVersionNumber(a).CompareTo(GetVersionNumber(b));
+        });
     }
 }

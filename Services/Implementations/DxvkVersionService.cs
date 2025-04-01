@@ -14,47 +14,41 @@ namespace DxvkVersionManager.Services.Implementations;
 
 public class DxvkVersionService : IDxvkVersionService
 {
-    private readonly string _userDataPath;
+    private readonly HttpClient _httpClient;
+    private readonly string _dataPath;
     private readonly string _dxvkCachePath;
     private readonly string _dxvkGplasyncCachePath;
-    private readonly HttpClient _httpClient;
     private readonly LoggingService _logger;
     
-    public DxvkVersionService(string userDataPath)
+    public DxvkVersionService(string dataPath)
     {
-        ArgumentNullException.ThrowIfNull(userDataPath);
-        _userDataPath = userDataPath;
-        _dxvkCachePath = Path.Combine(_userDataPath, "dxvk-cache");
-        _dxvkGplasyncCachePath = Path.Combine(_userDataPath, "dxvk-gplasync-cache");
-        
         _httpClient = new HttpClient();
-        _httpClient.DefaultRequestHeaders.Add("User-Agent", "DXVK-Version-Manager/2.0");
-        
+        _httpClient.DefaultRequestHeaders.Add("User-Agent", "DxvkVersionManager/1.0");
         _logger = LoggingService.Instance;
+        
+        _dataPath = dataPath; // Store the base data path
+        _dxvkCachePath = Path.Combine(_dataPath, "dxvk-cache");
+        _dxvkGplasyncCachePath = Path.Combine(_dataPath, "dxvk-gplasync-cache");
+        
+        _logger.LogInformation($"DXVK cache path set to: {_dxvkCachePath}");
+        _logger.LogInformation($"DXVK GPLAsync cache path set to: {_dxvkGplasyncCachePath}");
+        
+        // Ensure cache directories exist (moved from InitializeCacheDirectoriesAsync for earlier check)
+        try
+        {
+            Directory.CreateDirectory(_dxvkCachePath);
+            Directory.CreateDirectory(_dxvkGplasyncCachePath);
+        }
+        catch(Exception ex)
+        {
+            _logger.LogError(ex, "Failed to create cache directories on initialization.");
+        }
     }
     
     public Task InitializeCacheDirectoriesAsync()
     {
-        try
-        {
-            if (!Directory.Exists(_dxvkCachePath))
-            {
-                Directory.CreateDirectory(_dxvkCachePath);
-                _logger.LogInformation($"Created DXVK cache directory: {_dxvkCachePath}");
-            }
-            
-            if (!Directory.Exists(_dxvkGplasyncCachePath))
-            {
-                Directory.CreateDirectory(_dxvkGplasyncCachePath);
-                _logger.LogInformation($"Created DXVK-gplasync cache directory: {_dxvkGplasyncCachePath}");
-            }
-            return Task.CompletedTask;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Failed to initialize cache directories");
-            throw;
-        }
+        // Directories are now created in the constructor
+        return Task.CompletedTask;
     }
     
     public async Task<List<DxvkRelease>> FetchDxvkReleasesAsync()

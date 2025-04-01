@@ -8,59 +8,90 @@ namespace DxvkVersionManager.Services.Implementations;
 public class DxvkManagerService : IDxvkManagerService
 {
     private readonly ISteamService _steamService;
-    private readonly string _userDataPath;
+    private readonly IDxvkVersionService _dxvkVersionService;
+    private readonly string _dataPath;
     private readonly LoggingService _logger;
+    private const string _dxvkStatusFile = "dxvk-status.json";
     
-    public DxvkManagerService(ISteamService steamService, string userDataPath)
+    public DxvkManagerService(ISteamService steamService, IDxvkVersionService dxvkVersionService, string dataPath)
     {
         ArgumentNullException.ThrowIfNull(steamService);
-        ArgumentNullException.ThrowIfNull(userDataPath);
+        ArgumentNullException.ThrowIfNull(dxvkVersionService);
+        ArgumentNullException.ThrowIfNull(dataPath);
         _steamService = steamService;
-        _userDataPath = userDataPath;
+        _dxvkVersionService = dxvkVersionService;
+        _dataPath = dataPath;
         _logger = LoggingService.Instance;
+        _logger.LogInformation($"DxvkManagerService initialized with dataPath: {_dataPath}");
     }
     
     public async Task<OperationResult> ApplyDxvkToGameAsync(SteamGame game, string dxvkType, string version)
     {
         try
         {
-            _logger.LogInformation($"Applying {dxvkType} version {version} to {game.Name}...");
+            _logger.LogInformation($"Starting DXVK application process for {game.Name}: Version={version}, Type={dxvkType}");
             
             if (game.Metadata == null)
             {
-                return OperationResult.Failed($"Game metadata not available for {game.Name}. Please select DirectX version and architecture first.");
+                return OperationResult.Failed($"Game metadata not available for {game.Name}. Cannot apply DXVK.");
             }
-            
-            // Verify DirectX and architecture settings
-            if (string.IsNullOrEmpty(game.Metadata.Direct3dVersions) || game.Metadata.Direct3dVersions == "Unknown")
+
+            // 1. Check current status and remove if already patched
+            var currentStatus = await _steamService.GetGameDxvkStatusAsync(game.AppId);
+            if (currentStatus != null && currentStatus.Patched)
             {
-                return OperationResult.Failed($"DirectX version not specified for {game.Name}. Please select a DirectX version in the game settings.");
+                _logger.LogInformation($"Game {game.Name} is already patched with DXVK ({currentStatus.DxvkType} {currentStatus.DxvkVersion}). Performing removal first.");
+                var removalResult = await RemoveDxvkFromGameAsync(game);
+                if (!removalResult.Success)
+                {
+                    return OperationResult.Failed($"Failed to remove existing DXVK installation before applying new version. Error: {removalResult.Message}");
+                }
+                _logger.LogInformation("Existing DXVK installation removed successfully.");
             }
+            else
+            {
+                 _logger.LogInformation($"Game {game.Name} is not currently patched or status is unknown. Proceeding with new installation.");
+            }
+
+            // 2. Proceed with the standard application process (Backup original DLLs if present, Copy new DXVK DLLs)
             
+            // Verify architecture settings
             if (!game.Metadata.Executable32bit && !game.Metadata.Executable64bit)
             {
                 return OperationResult.Failed($"Executable architecture not specified for {game.Name}. Please select either 32-bit or 64-bit architecture in the game settings.");
             }
             
-            // Get the game installation directory
-            var gameDir = game.Metadata.InstallDir;
-            if (string.IsNullOrEmpty(gameDir) || !Directory.Exists(gameDir))
+            // Get the target directory (directory of the primary executable)
+            string? targetDir = null;
+            if (!string.IsNullOrEmpty(game.Metadata.TargetExecutablePath))
             {
-                return OperationResult.Failed($"Game installation directory not found: {gameDir}. The game may have been moved or uninstalled.");
+                targetDir = Path.GetDirectoryName(game.Metadata.TargetExecutablePath);
             }
+            
+            // Fallback to install directory if target executable path is not set
+            if (string.IsNullOrEmpty(targetDir))
+            {
+                targetDir = game.Metadata.InstallDir;
+                _logger.LogWarning($"Target executable path not found for {game.Name}. Falling back to game installation directory: {targetDir}");
+            }
+            
+            if (string.IsNullOrEmpty(targetDir) || !Directory.Exists(targetDir))
+            {
+                return OperationResult.Failed($"Target directory not found or invalid: {targetDir}. The game may have been moved or uninstalled.");
+            }
+            
+            _logger.LogInformation($"Target directory for DXVK DLLs: {targetDir}");
             
             // Get the architecture subfolder
             var archSubfolder = GetArchSubfolder(game.Metadata);
             _logger.LogInformation($"Using {archSubfolder} architecture for {game.Name}");
             
-            // Determine required DLLs based on Direct3D version
-            var requiredDlls = GetRequiredDlls(game.Metadata.Direct3dVersions);
-            if (requiredDlls.Count == 0)
-            {
-                return OperationResult.Failed($"Could not determine required DLLs for {game.Name}. Please select a valid DirectX version.");
-            }
+            // Use ALL possible DirectX DLLs
+            var allDxDlls = new List<string> {
+                "d3d8.dll", "d3d9.dll", "d3d10.dll", "d3d10core.dll", "d3d11.dll", "d3d12.dll", "dxgi.dll"
+            };
             
-            _logger.LogInformation($"Game uses {game.Metadata.Direct3dVersions}, requires DLLs: {string.Join(", ", requiredDlls)}");
+            _logger.LogInformation($"Will copy all available DirectX DLLs for {game.Name}");
             
             // Add version information to log for analysis
             if (Version.TryParse(version, out Version? parsedVersion) && parsedVersion >= new Version(2, 0))
@@ -69,26 +100,27 @@ public class DxvkManagerService : IDxvkManagerService
             }
             
             // Check for existing DLLs
-            var existingDlls = CheckExistingDlls(gameDir, requiredDlls);
+            var existingDlls = CheckExistingDlls(targetDir, allDxDlls);
             
             // Determine the DXVK source directory
             var dxvkTypeDir = dxvkType == "dxvk-gplasync" ? "dxvk-gplasync-cache" : "dxvk-cache";
-            var sourceDxvkDir = Path.Combine(_userDataPath, dxvkTypeDir, version);
+            var sourceDxvkDir = Path.Combine(_dataPath, dxvkTypeDir, version);
             
             if (!Directory.Exists(sourceDxvkDir))
             {
                 return OperationResult.Failed($"DXVK version {version} not found in cache. Please download this version first.");
             }
             
-            // Backup existing DLLs if any
+            // Backup existing DLLs if necessary
             if (existingDlls.Count > 0)
             {
                 try
                 {
-                    var backupSuccess = await BackupExistingDllsAsync(gameDir, existingDlls);
+                    var backupSuccess = BackupExistingDlls(targetDir, existingDlls);
                     if (!backupSuccess)
                     {
-                        return OperationResult.Failed($"Failed to backup existing DLLs for {game.Name}. Please check if you have write permissions to the game directory.");
+                        // Decide how to handle backup failure - maybe log and continue?
+                        _logger.LogWarning($"Failed to back up existing DLLs for {game.Name}. Proceeding with installation...");
                     }
                 }
                 catch (Exception ex)
@@ -100,18 +132,23 @@ public class DxvkManagerService : IDxvkManagerService
             // Copy DXVK DLLs
             try
             {
-                var (success, skippedD3D10) = await CopyDxvkDllsAsync(
+                var (success, skippedDlls) = await CopyAllDxvkDllsAsync(
                     sourceDxvkDir,
                     archSubfolder,
-                    gameDir,
-                    requiredDlls,
+                    targetDir,
+                    allDxDlls,
                     dxvkType,
                     version);
-                    
+                
+                if (!success)
+                {
+                    return OperationResult.Failed($"Failed to copy DXVK DLLs to {targetDir}");
+                }
+                
                 // Update DXVK status after successful installation
                 await UpdateGameDxvkStatusAsync(game.AppId, new DxvkStatus 
                 { 
-                    Patched = success, 
+                    Patched = true, 
                     DxvkType = dxvkType,
                     DxvkVersion = version,
                     Backuped = existingDlls.Count > 0,
@@ -125,9 +162,9 @@ public class DxvkManagerService : IDxvkManagerService
                     result.Warning = "No original DirectX DLLs were found and backed up. This is unusual but not necessarily a problem.";
                 }
                 
-                if (skippedD3D10)
+                if (skippedDlls.Count > 0)
                 {
-                    result.Warning = "Some D3D10 DLLs were skipped because they were not found in the DXVK package. This is normal in newer DXVK versions.";
+                    result.Warning = $"Some DLLs were skipped because they were not found in the DXVK package: {string.Join(", ", skippedDlls)}. This is normal in some DXVK versions.";
                 }
                 
                 return result;
@@ -167,19 +204,36 @@ public class DxvkManagerService : IDxvkManagerService
                 return OperationResult.Failed($"Game metadata not available for {game.Name}");
             }
             
-            // Get the game installation directory
-            var gameDir = game.Metadata.InstallDir;
-            if (string.IsNullOrEmpty(gameDir) || !Directory.Exists(gameDir))
+            // Get the target directory (directory of the primary executable)
+            string? targetDir = null;
+            if (!string.IsNullOrEmpty(game.Metadata.TargetExecutablePath))
             {
-                return OperationResult.Failed($"Game installation directory not found: {gameDir}");
+                targetDir = Path.GetDirectoryName(game.Metadata.TargetExecutablePath);
             }
             
-            // Determine required DLLs based on Direct3D version
-            var requiredDlls = GetRequiredDlls(game.Metadata.Direct3dVersions);
-            _logger.LogInformation($"Game uses {game.Metadata.Direct3dVersions}, requires DLLs: {string.Join(", ", requiredDlls)}");
+            // Fallback to install directory if target executable path is not set
+            if (string.IsNullOrEmpty(targetDir))
+            {
+                targetDir = game.Metadata.InstallDir;
+                _logger.LogWarning($"Target executable path not found for {game.Name}. Falling back to game installation directory: {targetDir}");
+            }
+            
+            if (string.IsNullOrEmpty(targetDir) || !Directory.Exists(targetDir))
+            {
+                return OperationResult.Failed($"Target directory not found or invalid: {targetDir}");
+            }
+            
+            _logger.LogInformation($"Target directory for DXVK removal: {targetDir}");
+            
+            // Use ALL possible DirectX DLLs for restoration/removal checks
+            var allDxDlls = new List<string> {
+                "d3d8.dll", "d3d9.dll", "d3d10.dll", "d3d10core.dll", "d3d11.dll", "d3d12.dll", "dxgi.dll"
+            };
+            
+            _logger.LogInformation($"Will restore/remove all DirectX DLLs for {game.Name}");
             
             // Check if there are backup files
-            bool hasBackups = HasBackupFiles(gameDir);
+            bool hasBackups = HasBackupFiles(targetDir);
             
             if (hasBackups)
             {
@@ -190,10 +244,10 @@ public class DxvkManagerService : IDxvkManagerService
                 var failedDlls = new List<string>();
                 
                 // For each required DLL, restore from backup if exists
-                foreach (var dll in requiredDlls)
+                foreach (var dll in allDxDlls)
                 {
-                    var backupPath = Path.Combine(gameDir, $"{dll}.bkp");
-                    var targetPath = Path.Combine(gameDir, dll);
+                    var backupPath = Path.Combine(targetDir, $"{dll}.bkp");
+                    var targetPath = Path.Combine(targetDir, dll);
                     
                     if (File.Exists(backupPath))
                     {
@@ -273,10 +327,10 @@ public class DxvkManagerService : IDxvkManagerService
                 // Cache the patched status for use in logic
                 bool isKnownToBePatched = (game.DxvkStatus?.Patched == true);
                 
-                // For each required DLL, check if it exists and if it's likely a DXVK DLL
-                foreach (var dll in requiredDlls)
+                // For each DLL, check if it exists and if it's likely a DXVK DLL
+                foreach (var dll in allDxDlls)
                 {
-                    var dllPath = Path.Combine(gameDir, dll);
+                    var dllPath = Path.Combine(targetDir, dll);
                     if (File.Exists(dllPath))
                     {
                         try
@@ -347,18 +401,22 @@ public class DxvkManagerService : IDxvkManagerService
         }
     }
     
-    private bool HasBackupFiles(string gameDir)
+    private bool HasBackupFiles(string targetDir)
     {
-        try
+        // Use ALL possible DirectX DLLs for backup check
+        var allDxDlls = new List<string> {
+            "d3d8.dll", "d3d9.dll", "d3d10.dll", "d3d10core.dll", "d3d11.dll", "d3d12.dll", "dxgi.dll"
+        };
+        
+        foreach (var dll in allDxDlls)
         {
-            var files = Directory.GetFiles(gameDir);
-            return files.Any(f => f.EndsWith(".bkp"));
+            if (File.Exists(Path.Combine(targetDir, $"{dll}.bkp")))
+            {
+                return true;
+            }
         }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, $"Error checking backup files in {gameDir}");
-            return false;
-        }
+        
+        return false;
     }
     
     public Task<bool> CheckBackupExistsAsync(string gameDir)
@@ -463,179 +521,118 @@ public class DxvkManagerService : IDxvkManagerService
         return existingDlls;
     }
     
-    private Task<bool> BackupExistingDllsAsync(string gameDir, List<string> existingDlls)
+    private bool BackupExistingDlls(string targetDir, List<string> existingDlls)
     {
+        var backupDir = Path.Combine(targetDir, "dxvk-backup");
         try
         {
+            // Ensure backup directory exists
+            Directory.CreateDirectory(backupDir);
+            
             foreach (var dll in existingDlls)
             {
-                var sourcePath = Path.Combine(gameDir, dll);
-                var backupPath = $"{sourcePath}.bkp";
+                var sourcePath = Path.Combine(targetDir, dll);
+                var backupPath = Path.Combine(backupDir, dll);
                 
-                // Check if backup already exists
-                if (File.Exists(backupPath))
+                // Check if backup already exists (don't overwrite)
+                if (!File.Exists(backupPath))
                 {
-                    _logger.LogInformation($"Backup already exists for {dll}, skipping");
-                    continue;
+                    File.Move(sourcePath, backupPath, true); // Use Move to ensure atomicity
+                    _logger.LogInformation($"Backed up {dll} to {backupPath}");
                 }
-                
-                // Create a backup copy
-                File.Copy(sourcePath, backupPath);
-                _logger.LogInformation($"Backed up {dll} to {backupPath}");
+                else
+                {
+                    _logger.LogWarning($"Backup for {dll} already exists at {backupPath}. Removing current DLL without backup.");
+                    // If backup exists, just delete the source file since we can't back it up again
+                    File.Delete(sourcePath);
+                    _logger.LogInformation($"Removed existing DLL: {sourcePath}");
+                }
             }
-            return Task.FromResult(true);
+            return true;
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, $"Error backing up DLLs in {gameDir}");
-            return Task.FromResult(false);
+            _logger.LogError(ex, $"Error backing up DLLs in {targetDir}");
+            return false;
         }
     }
     
-    private async Task<(bool Success, bool SkippedD3D10)> CopyDxvkDllsAsync(
+    private async Task<(bool Success, List<string> SkippedDlls)> CopyAllDxvkDllsAsync(
         string sourceDxvkDir,
         string archSubfolder,
-        string gameDir,
+        string targetGameDir,
         List<string> requiredDlls,
         string dxvkType,
         string version)
     {
-        try
+        // Prepare a list to track skipped DLLs
+        var skippedDlls = new List<string>();
+        
+        // Check if source directory exists
+        var sourceDllDir = Path.Combine(sourceDxvkDir, archSubfolder);
+        if (!Directory.Exists(sourceDllDir))
         {
-            // Add Task.Yield to make this truly async
-            await Task.Yield();
+            // Also check for nested directory structure
+            var potentialNestedDirs = Directory.GetDirectories(sourceDxvkDir, "dxvk*");
+            bool foundNestedDllDir = false;
             
-            _logger.LogDebug($"Starting DXVK copy operation for {dxvkType} {version}");
-            _logger.LogDebug($"Source: {sourceDxvkDir}/{archSubfolder}, Target: {gameDir}");
-            
-            // Flag to track if we're intentionally skipping D3D10 DLLs
-            bool skippingD3D10Dlls = false;
-            
-            // Check source directory exists
-            var sourceArchDir = Path.Combine(sourceDxvkDir, archSubfolder ?? string.Empty);
-            var versionNameFolder = $"dxvk-{version}";
-            var alternativeSourceArchDir = Path.Combine(sourceDxvkDir, versionNameFolder, archSubfolder ?? string.Empty);
-            
-            _logger.LogDebug($"Checking for architecture directory at: {sourceArchDir}");
-            _logger.LogDebug($"Checking for alternative architecture directory at: {alternativeSourceArchDir}");
-            
-            // Check first in the direct path, then in the nested path
-            if (!Directory.Exists(sourceArchDir))
+            foreach (var nestedDir in potentialNestedDirs)
             {
-                _logger.LogDebug($"Directory not found at {sourceArchDir}, trying alternative path");
-                
-                if (Directory.Exists(alternativeSourceArchDir))
+                var nestedDllDir = Path.Combine(nestedDir, archSubfolder);
+                if (Directory.Exists(nestedDllDir))
                 {
-                    _logger.LogDebug($"Found architecture directory at alternative path: {alternativeSourceArchDir}");
-                    sourceArchDir = alternativeSourceArchDir;
-                }
-                else
-                {
-                    // Try to find any subdirectory that might contain the architecture folders
-                    var possibleSubdirs = Directory.GetDirectories(sourceDxvkDir);
-                    foreach (var subdir in possibleSubdirs)
-                    {
-                        var archPath = Path.Combine(subdir, archSubfolder ?? string.Empty);
-                        if (Directory.Exists(archPath))
-                        {
-                            _logger.LogDebug($"Found architecture directory in subdirectory: {archPath}");
-                            sourceArchDir = archPath;
-                            break;
-                        }
-                    }
-                    
-                    // If we still haven't found it, throw an error
-                    if (!Directory.Exists(sourceArchDir))
-                    {
-                        _logger.LogError($"Architecture directory not found: {sourceArchDir}");
-                        _logger.LogError($"Also checked alternative path: {alternativeSourceArchDir}");
-                        _logger.LogError($"Directory structure at {sourceDxvkDir}: {string.Join(", ", Directory.GetDirectories(sourceDxvkDir))}");
-                        
-                        throw new DirectoryNotFoundException($"DXVK directory for {archSubfolder} architecture not found. Make sure you have downloaded this DXVK version.");
-                    }
+                    sourceDllDir = nestedDllDir;
+                    foundNestedDllDir = true;
+                    _logger.LogInformation($"Found DLLs in nested directory structure: {nestedDllDir}");
+                    break;
                 }
             }
             
-            // Check which DLLs are available in the source directory
-            var availableDlls = Directory.GetFiles(sourceArchDir, "*.dll")
-                .Select(Path.GetFileName)
-                .ToList();
-                
-            // Check which required DLLs are missing from source
-            var missingSourceDlls = requiredDlls
-                .Where(dll => !availableDlls.Contains(dll))
-                .ToList();
-                
-            if (missingSourceDlls.Count > 0)
+            // If we still don't have a valid directory, check the root of the DXVK directory
+            if (!foundNestedDllDir)
             {
-                _logger.LogWarning($"Missing DXVK DLLs in source: {string.Join(", ", missingSourceDlls)}");
-                
-                // Special handling for D3D10 related DLLs which may not exist in newer DXVK versions
-                bool onlyD3D10Missing = missingSourceDlls.All(dll => 
-                    dll == "d3d10.dll" || dll == "d3d10_1.dll");
-                    
-                // If we're missing D3D10 DLLs but have D3D11 (which handles D3D10 in newer DXVK),
-                // we can continue with just the available DLLs
-                if (onlyD3D10Missing && availableDlls.Contains("d3d11.dll"))
+                if (Directory.GetFiles(sourceDxvkDir, "*.dll").Length > 0)
                 {
-                    _logger.LogInformation("Missing D3D10 DLLs but D3D11 present - this is normal in newer DXVK versions");
-                    
-                    // Filter required DLLs to only those that actually exist
-                    requiredDlls = requiredDlls
-                        .Where(dll => availableDlls.Contains(dll))
-                        .ToList();
-                        
-                    _logger.LogInformation($"Proceeding with available DLLs: {string.Join(", ", requiredDlls)}");
-                    
-                    // Set a flag that we're skipping D3D10 DLLs intentionally
-                    skippingD3D10Dlls = true;
+                    sourceDllDir = sourceDxvkDir;
+                    _logger.LogInformation($"Using DLLs directly from root directory: {sourceDllDir}");
                 }
                 else
                 {
-                    throw new FileNotFoundException($"Required DLLs not found in DXVK package: {string.Join(", ", missingSourceDlls)}. Try downloading DXVK again.");
+                    throw new DirectoryNotFoundException($"Cannot find DXVK {version} DLLs for {archSubfolder} architecture.");
                 }
             }
+        }
+        
+        // Copy each required DLL
+        foreach (var dll in requiredDlls)
+        {
+            var sourceDllPath = Path.Combine(sourceDllDir, dll);
+            var targetDllPath = Path.Combine(targetGameDir, dll);
             
-            // Copy each required DLL
-            foreach (var dll in requiredDlls)
+            if (File.Exists(sourceDllPath))
             {
-                var sourcePath = Path.Combine(sourceArchDir, dll);
-                var targetPath = Path.Combine(gameDir, dll);
-                
-                // If target exists, try to delete it
-                if (File.Exists(targetPath))
+                // Ensure target file is not read-only
+                if (File.Exists(targetDllPath))
                 {
-                    try
+                    var fileInfo = new FileInfo(targetDllPath);
+                    if (fileInfo.IsReadOnly)
                     {
-                        using (var fs = new FileStream(targetPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
-                        {
-                            // Just testing if file is locked - if we can open it for writing, it's not locked
-                        }
-                        
-                        // If we get here, the file isn't locked, so delete it
-                        File.Delete(targetPath);
-                        _logger.LogDebug($"Deleted existing {dll}");
-                    }
-                    catch (IOException)
-                    {
-                        _logger.LogError($"Cannot replace {dll} because it's in use. Please close the game or any related processes and try again.");
-                        throw new IOException($"The file {dll} is locked and cannot be replaced. Please close the game and any related launchers before trying again.");
+                        fileInfo.IsReadOnly = false;
                     }
                 }
                 
                 // Copy the DLL
-                File.Copy(sourcePath, targetPath);
-                _logger.LogInformation($"Copied {dll} to {gameDir}");
+                File.Copy(sourceDllPath, targetDllPath, true);
+                _logger.LogInformation($"Copied {dll} to game directory");
             }
-            
-            return (true, skippingD3D10Dlls);
+            else
+            {
+                _logger.LogWarning($"Could not find {dll} in DXVK version {version}, skipping");
+                skippedDlls.Add(dll);
+            }
         }
-        catch (Exception ex) when (!(ex is DirectoryNotFoundException || ex is FileNotFoundException || ex is IOException))
-        {
-            // Only log general exception, but let specific ones propagate with their custom messages
-            _logger.LogError(ex, $"Error copying DXVK DLLs");
-            throw;
-        }
+        
+        return (true, skippedDlls);
     }
 
     // Helper method to check for running processes that might be from the game
@@ -757,13 +754,15 @@ public class DxvkManagerService : IDxvkManagerService
             results.Add($"DXVK Architecture Subfolder: {archSubfolder}");
             
             // Get required DLLs
-            var requiredDlls = GetRequiredDlls(dxVersions);
-            results.Add($"Required DLLs: {string.Join(", ", requiredDlls)}");
+            var allDxDlls = new List<string> {
+                "d3d8.dll", "d3d9.dll", "d3d10.dll", "d3d10core.dll", "d3d11.dll", "d3d12.dll", "dxgi.dll"
+            };
+            results.Add($"Required DLLs: {string.Join(", ", allDxDlls)}");
             results.Add("----------------------------------------");
             
             // DXVK cache info
             var dxvkTypeDir = dxvkType == "dxvk-gplasync" ? "dxvk-gplasync-cache" : "dxvk-cache";
-            var dxvkCacheDir = Path.Combine(_userDataPath, dxvkTypeDir);
+            var dxvkCacheDir = Path.Combine(_dataPath, dxvkTypeDir);
             
             results.Add($"DXVK Cache Directory: {dxvkCacheDir}");
             
@@ -840,7 +839,7 @@ public class DxvkManagerService : IDxvkManagerService
                             
                         results.Add($"  Available DLLs: {string.Join(", ", availableDlls)}");
                         
-                        var missingDlls = requiredDlls
+                        var missingDlls = allDxDlls
                             .Where(dll => !availableDlls.Contains(dll))
                             .ToList();
                             
@@ -973,9 +972,9 @@ public class DxvkManagerService : IDxvkManagerService
                 if (fileStream.Length < 100)
                     return false;
                 
-                var buffer = new byte[4096]; // Read first 4KB
-                var bytesToRead = Math.Min(buffer.Length, (int)fileStream.Length);
-                await fileStream.ReadAsync(buffer.AsMemory(0, bytesToRead));
+                // Read the magic number (first 2 bytes)
+                var buffer = new byte[2];
+                await fileStream.ReadExactlyAsync(buffer, 0, 2);
                 
                 // Convert to string for easier searching
                 var content = System.Text.Encoding.ASCII.GetString(buffer);
@@ -1021,16 +1020,13 @@ public class DxvkManagerService : IDxvkManagerService
         try
         {
             _logger.LogInformation($"Updating DXVK status for game with AppID {appId}");
-            
-            // Create the dxvk-status directory if it doesn't exist
-            var dxvkStatusDir = Path.Combine(_userDataPath, "dxvk-status");
-            if (!Directory.Exists(dxvkStatusDir))
-            {
-                Directory.CreateDirectory(dxvkStatusDir);
-            }
-            
-            // Save status to JSON file
-            var statusFilePath = Path.Combine(dxvkStatusDir, $"{appId}.json");
+
+            // Define the path for the status file within the app's data directory
+            var statusDir = Path.Combine(_dataPath, "dxvk-status");
+            Directory.CreateDirectory(statusDir); // Ensure the directory exists
+            var statusFilePath = Path.Combine(statusDir, $"{appId}.json");
+
+            // Save status to JSON file in the central status directory
             var json = System.Text.Json.JsonSerializer.Serialize(status, new System.Text.Json.JsonSerializerOptions
             {
                 WriteIndented = true
@@ -1038,10 +1034,7 @@ public class DxvkManagerService : IDxvkManagerService
             
             await File.WriteAllTextAsync(statusFilePath, json);
             
-            // Update Steam service status too
-            await _steamService.UpdateGameDxvkStatusAsync(appId, status);
-            
-            _logger.LogInformation($"DXVK status updated for game with AppID {appId}");
+            _logger.LogInformation($"DXVK status updated for game with AppID {appId} at {statusFilePath}");
             return true;
         }
         catch (Exception ex)
@@ -1055,5 +1048,35 @@ public class DxvkManagerService : IDxvkManagerService
     {
         // Replace with call to the fixed method
         return await RemoveDxvkFromGameAsync(game);
+    }
+
+    // Determine the source directory for DXVK DLLs based on architecture and potential nested structures
+    private string? FindSourceDxvkArchDir(string sourceDxvkBaseDir, string archSubfolder)
+    {
+        // Standard: <dataPath>/<cacheType>/<version>/<archSubfolder>
+        var standardPath = Path.Combine(sourceDxvkBaseDir, archSubfolder);
+        if (Directory.Exists(standardPath))
+        {
+            return standardPath;
+        }
+
+        // Check for nested structure
+        var nestedDirs = Directory.GetDirectories(sourceDxvkBaseDir, "dxvk*");
+        foreach (var nestedDir in nestedDirs)
+        {
+            var nestedArchDir = Path.Combine(nestedDir, archSubfolder);
+            if (Directory.Exists(nestedArchDir))
+            {
+                return nestedArchDir;
+            }
+        }
+
+        // Check for root level dxvk directories
+        if (Directory.GetFiles(sourceDxvkBaseDir, "*.dll").Length > 0)
+        {
+            return sourceDxvkBaseDir;
+        }
+
+        return null;
     }
 }

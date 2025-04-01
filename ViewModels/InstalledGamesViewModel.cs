@@ -60,7 +60,7 @@ public partial class InstalledGamesViewModel : ViewModelBase
         
         try
         {
-            var games = await _steamService.GetInstalledGamesAsync();
+            var games = await _steamService.GetInstalledGamesAsync(forceRefresh: true);
             
             Games.Clear();
             foreach (var game in games)
@@ -189,29 +189,34 @@ public partial class InstalledGamesViewModel : ViewModelBase
     }
     
     [RelayCommand]
-    private async Task UpdateDirectXVersionAsync(ComboBoxItem selectedItem)
+    private async Task UpdateDirectXVersionAsync((string appId, string directXVersion) parameters)
     {
-        if (selectedItem == null || selectedItem.Tag == null) return;
+        var (appId, directXVersion) = parameters;
         
-        var appId = selectedItem.Tag.ToString();
-        if (string.IsNullOrEmpty(appId)) return;
+        if (string.IsNullOrEmpty(appId) || string.IsNullOrEmpty(directXVersion)) return;
         
         var game = Games.FirstOrDefault(g => g.AppId == appId);
         if (game == null || game.Metadata == null) return;
         
-        var value = selectedItem.Content?.ToString();
-        if (string.IsNullOrEmpty(value)) return;
-        
-        // Skip the "Choose Direct3D version" option
-        if (value.Contains("Choose")) return;
+        // Skip if the value hasn't changed
+        if (game.Metadata.Direct3dVersions == directXVersion) return;
         
         // Update in memory immediately
-        game.Metadata.Direct3dVersions = value;
+        game.Metadata.Direct3dVersions = directXVersion;
+        
+        // If this was auto-detected, mark it as manually selected now
+        if (game.Metadata.D3dVersionAutoDetected)
+        {
+            game.Metadata.D3dVersionAutoDetected = false;
+            game.Metadata.DetectionMethod = "Manually selected by user";
+        }
         
         // Create a dictionary for the server update
         var metadataUpdates = new Dictionary<string, object>
         {
-            ["direct3dVersions"] = value
+            ["direct3dVersions"] = directXVersion,
+            ["d3dVersionAutoDetected"] = false,
+            ["detectionMethod"] = "Manually selected by user"
         };
         
         // Save the metadata

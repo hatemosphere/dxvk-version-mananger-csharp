@@ -1,6 +1,7 @@
 namespace DxvkVersionManager.Models;
 
 using CommunityToolkit.Mvvm.ComponentModel;
+using System.Collections.Generic;
 
 public partial class GameMetadata : ObservableObject
 {
@@ -21,6 +22,11 @@ public partial class GameMetadata : ObservableObject
     private bool _architectureAutoDetected;
     private string _detectionMethod = string.Empty;
     private string _detailedDetectionInfo = string.Empty;
+    private List<string>? _availableDirect3dVersions;
+    private bool _supportsMultipleDirect3dVersions;
+    private List<string>? _officialDirectXVersions;
+    private bool _hasWikiInformation;
+    private string? _targetExecutablePath; // Path to the primary executable detected for DXVK installation
 
     public GameMetadata()
     {
@@ -156,7 +162,7 @@ public partial class GameMetadata : ObservableObject
     // Helper method to update HasCompleteInfo property
     private void UpdateHasCompleteInfo()
     {
-        HasCompleteInfo = Direct3dVersions != "Unknown" && (Executable32bit || Executable64bit);
+        HasCompleteInfo = (Executable32bit || Executable64bit);
     }
     
     // Helper property to determine if the game supports Vulkan natively
@@ -164,5 +170,40 @@ public partial class GameMetadata : ObservableObject
     {
         get => _supportsVulkan || (!string.IsNullOrEmpty(VulkanVersions) && VulkanVersions != "Unknown");
         set => SetProperty(ref _supportsVulkan, value);
+    }
+    
+    // Collection of available Direct3D versions detected in the game
+    public List<string>? AvailableDirect3dVersions
+    {
+        get => _availableDirect3dVersions;
+        set => SetProperty(ref _availableDirect3dVersions, value);
+    }
+    
+    // Flag indicating if the game supports multiple DirectX versions
+    public bool SupportsMultipleDirect3dVersions
+    {
+        get => _supportsMultipleDirect3dVersions;
+        set => SetProperty(ref _supportsMultipleDirect3dVersions, value);
+    }
+    
+    // Collection of officially supported DirectX versions from PCGamingWiki
+    public List<string>? OfficialDirectXVersions
+    {
+        get => _officialDirectXVersions;
+        set => SetProperty(ref _officialDirectXVersions, value);
+    }
+    
+    // Flag indicating if wiki information has been retrieved
+    public bool HasWikiInformation
+    {
+        get => _hasWikiInformation;
+        set => SetProperty(ref _hasWikiInformation, value);
+    }
+    
+    // Path to the primary executable detected for DXVK installation
+    public string? TargetExecutablePath
+    {
+        get => _targetExecutablePath;
+        set => SetProperty(ref _targetExecutablePath, value);
     }
 }

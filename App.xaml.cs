@@ -21,13 +21,18 @@ public partial class App : Application
         
         try
         {
-            // Initialize logging
+            // Initialize logging with one file per session
+            var logFileName = $"app_{DateTime.Now:yyyyMMdd_HHmmss_fff}.log";
+            var logFilePath = Path.Combine(AppContext.BaseDirectory, "logs", logFileName);
+            
             Log.Logger = new LoggerConfiguration()
-                .WriteTo.File("logs/app.log", rollingInterval: RollingInterval.Day)
+                .MinimumLevel.Debug()
+                .WriteTo.File(logFilePath, 
+                    outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz} [{Level:u3}] {Message:lj}{NewLine}{Exception}")
                 .WriteTo.Debug()
                 .CreateLogger();
             
-            Log.Information("Application starting up");
+            Log.Information($"Application starting up. Logging to: {logFilePath}");
             
             // Configure services
             var services = new ServiceCollection();
@@ -58,15 +63,35 @@ public partial class App : Application
             Log.Information($"Created data directory: {dataPath}");
         }
         
-        // Register services
-        services.AddSingleton<ISteamService>(provider => new SteamService(dataPath));
+        // Remove userDataPath - everything uses dataPath now
+        Log.Information("Configuring services with dataPath: " + dataPath);
+        
+        // Register services with explicit order
+        // 1. Register singleton services first
+        Log.Information("Registering PCGamingWikiService");
+        services.AddSingleton<IPCGamingWikiService, PCGamingWikiService>();
+        
+        // 2. Register services that depend on previously registered services
+        Log.Information("Registering SteamService with PCGamingWikiService dependency");
+        services.AddSingleton<ISteamService>(provider => {
+            var pcgwService = provider.GetRequiredService<IPCGamingWikiService>();
+            Log.Information("Retrieved PCGamingWikiService for SteamService");
+            return new SteamService(pcgwService, dataPath);
+        });
+        
+        // 3. Register remaining services
+        Log.Information("Registering DxvkVersionService");
         services.AddSingleton<IDxvkVersionService>(provider => new DxvkVersionService(dataPath));
-        services.AddSingleton<IDxvkManagerService>(provider => 
-            new DxvkManagerService(
-                provider.GetRequiredService<ISteamService>(),
-                dataPath
-            ));
-        services.AddSingleton<LoggingService>();
+        
+        Log.Information("Registering DxvkManagerService");
+        services.AddSingleton<IDxvkManagerService>(provider => new DxvkManagerService(
+            provider.GetRequiredService<ISteamService>(),
+            provider.GetRequiredService<IDxvkVersionService>(),
+            dataPath
+        ));
+        
+        // LoggingService is now a static singleton using the main logger, no need to register
+        // services.AddSingleton<LoggingService>();
         
         // Register view models
         services.AddTransient<MainViewModel>();
@@ -76,6 +101,8 @@ public partial class App : Application
         
         // Register views
         services.AddTransient<MainWindow>();
+        
+        Log.Information("Service registration completed");
     }
     
     protected override void OnExit(ExitEventArgs e)
