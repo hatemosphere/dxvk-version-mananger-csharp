@@ -974,7 +974,8 @@ public class DxvkManagerService : IDxvkManagerService
                     return false;
                 
                 var buffer = new byte[4096]; // Read first 4KB
-                await fileStream.ReadAsync(buffer, 0, Math.Min(buffer.Length, (int)fileStream.Length));
+                var bytesToRead = Math.Min(buffer.Length, (int)fileStream.Length);
+                await fileStream.ReadAsync(buffer.AsMemory(0, bytesToRead));
                 
                 // Convert to string for easier searching
                 var content = System.Text.Encoding.ASCII.GetString(buffer);
